@@ -37,6 +37,7 @@ add_library(cs179_core STATIC
     cpp/src/npy.cpp
     cpp/src/rlds_loader.cpp
 )
+set_target_properties(cs179_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(cs179_core PUBLIC cpp/include)
 target_link_libraries(cs179_core PUBLIC nlohmann_json::nlohmann_json)
 
