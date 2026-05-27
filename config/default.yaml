@@ -1,0 +1,46 @@
+# Retargeting defaults (UR3e). Override: cs179 retarget --config path/to.yaml
+
+runtime:
+  display_fps: 60
+  # Used for joint velocity/acceleration costs unless RLDS metadata or --control-hz overrides.
+  control_hz: 15.0
+
+cost:
+  # Residual normalization (physical units noted inline).
+  units:
+    position: 0.01                    # m
+    rotation: 5.0                       # deg
+    joint_velocity: [90, 90, 90, 180, 180, 180]   # deg/s per joint
+    joint_acceleration: 800.0           # deg/s²
+    neutral_pose: 6.283185307179586     # rad (2π)
+    elbow_side: 0.05                    # m (signed shoulder–wrist plane offset)
+
+  # Objective term multipliers.
+  weights:
+    position: 1.0
+    rotation: 1.0
+    rotation_min_scale: 0.35            # floor on rotation weight when reach scaling shrinks target
+    joint_velocity: 0.05
+    joint_acceleration: 0.05
+    neutral_pose: 0.05
+    elbow_branch: 0.0
+
+  elbow_margin: 0.02                    # m
+
+ik_seed:
+  max_iterations: 200
+  step: 0.5
+  damping: 1.0e-4
+  tolerance: 1.0e-4
+
+optimizer:
+  # Python: SciPy L-BFGS-B; native: NLopt LD_LBFGS with joint limit bounds.
+  method: L-BFGS-B
+  max_iterations: 400
+  ftol: 1.0e-9
+  gradient_step_scale: 1.0e-8         # native central-difference step scale
+
+frames:
+  tool: tool0
+  ur3e_elbow: [shoulder_link, forearm_link, wrist_2_link]
+  panda_elbow: [panda_link1, panda_link3, panda_link5]

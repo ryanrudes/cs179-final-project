@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.coverage
+htmlcov/
+
+# Native extension artifacts
+src/cs179/_native*.so
+src/cs179/_native*.pyd
+
+# CMake / C++ / CUDA
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exp
+*.pdb
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+*.swp
+
+# Data
+data/

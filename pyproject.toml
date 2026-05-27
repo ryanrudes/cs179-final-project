@@ -1,0 +1,61 @@
+[project]
+name = "cs179"
+version = "0.1.0"
+description = "CS179 final project with CUDA C++ kernels and Python bindings"
+readme = "README.md"
+authors = [
+    { name = "ryanrudes", email = "ryanrudes@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "absl-py>=2.4.0",
+    "matplotlib>=3.10.9",
+    "meshcat>=0.3.2",
+    "numpy>=2.0",
+    "pin>=4.0.0",
+    "rich>=14.3.4",
+    "robot-descriptions>=2.0.0",
+    "scipy>=1.17.1",
+    "tensorflow>=2.21.0",
+    "tensorflow-datasets>=4.9.10",
+    "pyyaml>=6.0",
+    "typer>=0.25.1",
+    "viser>=1.0.29",
+    "xacrodoc>=2.0.1",
+    "yourdfpy>=0.0.60",
+]
+
+[project.scripts]
+cs179 = "cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/cs179",
+    "src/rlds",
+    "src/app",
+    "src/reachability",
+    "src/retarget",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/cli.py" = "cli.py"
+"src/cli_reach_envelope.py" = "cli_reach_envelope.py"
+"config/default.yaml" = "config/default.yaml"
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: long-running tests (DROID trajectory sweeps); skipped with -m 'not slow'",
+]
