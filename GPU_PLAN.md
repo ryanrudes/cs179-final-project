@@ -53,6 +53,7 @@ Constant memory will store robot model constants, like the following:
 - task weights
 - joint type metadata
 - kinematic tree level info
+
 The important condition for constant memory is warp-uniform access, i.e. all lanes in a warp read the same constant address at the same time, since constant memory is best when it is broadcasting one value to a warp. We would prefer SoA here. If a constant is read many times inside a block, we could load it once into a register. Since each warp handles a frame, and each lane is responsible for one DOF, a naive approach to constant memory might result in extremely divergent accesses. Instead, we should iterate over tasks, and load task-specific constant memory into registers, that way we broadcast constant memory across the warp (where a task is just one term in the retargeting objective). As an example purely for understanding:
 ```cpp
 for (int task = 0; task < num_tasks; ++task) {
@@ -86,9 +87,9 @@ cudaError_t err = cudaGetDeviceProperties(&prop, device);
 `prop.sharedMemPerBlock` gives the legacy amount, and `prop.sharedMemPerBlockOptin` gives the higher limit available on newer architectures if you configure the kernel attributes accordingly.
 
 The formula for shared memory allocation size is
-$
-\texttt{shmem\_q} = 2 \times \texttt{D\_pad}\, \times \texttt{T\_max\_pad} \times \texttt{sizeof(float)}
-$
+```
+shmem_q = 2 * D_pad * T_max_pad * sizeof(float)
+```
 
 We may need to leave a little room for scratch space in shared memory, which could reduce the maximum supported trajectory length. It is hard to know how much, if any, scratch space we would need just yet.
 
