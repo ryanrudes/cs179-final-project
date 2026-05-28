@@ -172,7 +172,14 @@ if(CS179_BUILD_PYTHON)
     endif()
 
     if(CS179_BUILD_CUDA)
-        target_link_libraries(_native PRIVATE cs179_cuda CUDA::cudart)
+        target_sources(
+            _native PRIVATE
+            cuda/src/kernels.cu
+            cuda/src/retarget_gpu.cu)
+        set_source_files_properties(
+            cuda/src/kernels.cu cuda/src/retarget_gpu.cu
+            PROPERTIES LANGUAGE CUDA)
+        target_link_libraries(_native PRIVATE CUDA::cudart)
         target_include_directories(_native PRIVATE cuda/include)
         target_compile_definitions(_native PRIVATE CS179_HAVE_CUDA=1)
     endif()

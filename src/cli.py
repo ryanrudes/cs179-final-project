@@ -102,6 +102,7 @@ retarget_app = typer.Typer(help="Retarget cached DROID proprio demos onto UR3e."
 
 @retarget_app.callback(invoke_without_command=True)
 def retarget(
+    ctx: typer.Context,
     data_dir: Annotated[
         Path,
         typer.Option("--data-dir", help="Base data directory or dataset cache path."),
@@ -179,6 +180,27 @@ def retarget(
         ),
     ] = False,
     no_native: NoNativeOption = False,
+    use_gpu: Annotated[
+        bool,
+        typer.Option(
+            "--gpu",
+            help=(
+                "Retarget on GPU (CUDA build). Headless (--disable-visualization "
+                "--no-plots) uses batched trajectories; add --live-stats for per-demo "
+                "Rich progress instead."
+            ),
+        ),
+    ] = False,
+    live_stats: Annotated[
+        bool,
+        typer.Option(
+            "--live-stats",
+            help=(
+                "Rich live stats panel (headless only). With --gpu, defaults to batched "
+                "GPU without this flag."
+            ),
+        ),
+    ] = False,
     reach_safety: ReachSafetyOption = REACH_SAFETY_MARGIN,
     config: Annotated[
         Path,
@@ -187,10 +209,31 @@ def retarget(
             help="Retarget weights/solver YAML (default: config/default.yaml).",
         ),
     ] = Path("config/default.yaml"),
+    save_joints: Annotated[
+        bool,
+        typer.Option(
+            "--save-joints",
+            help=(
+                "Write joint trajectories under data/retargeted/<dataset>/ for later "
+                "Meshcat replay (recommended with batched --gpu)."
+            ),
+        ),
+    ] = False,
+    save_joints_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--save-joints-dir",
+            help="Override output directory for --save-joints.",
+        ),
+    ] = None,
 ) -> None:
     """Retarget proprio demos onto UR3e (reach envelope cache under data/reach_envelopes/)."""
+    if ctx.invoked_subcommand is not None:
+        return
     set_use_native_envelope(not no_native)
     set_use_native_retarget(not no_native)
+    if use_gpu and no_native:
+        raise typer.BadParameter("--gpu requires a CUDA native build; omit --no-native")
     config_path = config if config.is_file() else default_config_path()
     run_retarget(
         data_dir=data_dir,
@@ -202,13 +245,66 @@ def retarget(
         control_hz=control_hz,
         enable_visualization=not disable_visualization,
         show_plots=not no_plots,
+        show_progress=True if live_stats else None,
         reach_n_samples=reach_n_samples,
         reach_n_theta=reach_n_theta,
         reach_n_phi=reach_n_phi,
         reach_force_rebuild=reach_force_rebuild,
         reach_safety=reach_safety,
         config_path=config_path,
+        use_gpu=use_gpu,
+        save_joints=save_joints,
+        save_joints_dir=save_joints_dir,
     )
+
+
+@retarget_app.command("replay")
+def retarget_replay(
+    data_dir: Annotated[
+        Path,
+        typer.Option("--data-dir", help="Base data directory (used to resolve default cache path)."),
+    ] = Path("data"),
+    dataset_url: Annotated[
+        str,
+        typer.Option("--dataset-url", help="Dataset used for default cache path resolution."),
+    ] = str(RoboticsRldsDatasetUrl.DROID_100),
+    save_joints_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--save-joints-dir",
+            help="Retarget output directory (default: data/retargeted/<dataset>).",
+        ),
+    ] = None,
+    demo: Annotated[
+        Optional[int],
+        typer.Option("--demo", help="Demo index to replay (default: play --start-demo … range)."),
+    ] = None,
+    start_demo: Annotated[
+        int,
+        typer.Option("--start-demo", help="First demo index when replaying a range."),
+    ] = 0,
+    end_demo: Annotated[
+        Optional[int],
+        typer.Option("--end-demo", help="End demo index (exclusive) for range replay."),
+    ] = None,
+    fps: Annotated[
+        Optional[float],
+        typer.Option("--fps", help="Playback FPS (default: config runtime.display_fps)."),
+    ] = None,
+    loop: Annotated[
+        bool,
+        typer.Option("--loop", help="Loop the trajectory until Ctrl+C."),
+    ] = False,
+) -> None:
+    """Replay cached joint trajectories in Meshcat (use SSH port 7000 forwarding)."""
+    from retarget.cache import default_retarget_output_dir
+    from retarget.replay import replay_demo, replay_range
+
+    output_dir = save_joints_dir or default_retarget_output_dir(data_dir, dataset_url)
+    if demo is not None:
+        replay_demo(output_dir, demo, fps=fps, loop=loop)
+    else:
+        replay_range(output_dir, start_demo=start_demo, end_demo=end_demo, fps=fps)
 
 
 app = typer.Typer(help="CS179 final project tools.", no_args_is_help=True)

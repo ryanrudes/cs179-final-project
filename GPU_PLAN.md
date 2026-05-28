@@ -149,3 +149,26 @@ We have up to 255 32-bit registers per thread, but we don't want to be using any
 Adam needs extra persistent state for the velocity and momentum buffers, which triples state. L-BFGS needs multiple past vectors, which is even worse. Gauss-Newton / Levenberg-Marquardt could be okay if the system per frame is small and we don't store full dense Jacobians. But using projected gradient descent with damped updates, register usage is definitely best.
 
 Since we need to be as efficient as possible with register usage, I have already separately written code that compiles FK and Jacobian kernels with symbolic reduction and matrix sparsity, which can optimize for the minimum possible register usage. It also only emits the parts of the result that are dependent on $q$, so if some link's position or orientation or the derivative thereof happens to be constant w.r.t $q$, it doesn't emit it, allowing us to minimize register usage in FK and Jacobian computation and handle the constant components separately.
+
+---
+
+# Implementation status (cs179)
+
+| Plan item | Status |
+|-----------|--------|
+| One block per trajectory, batch over demos | Done (`cuda/src/retarget_gpu.cu`; mixed lengths: max `T_pad` + `lengths[]`, one launch) |
+| dof-major `q[d,t]` in shared memory | Done |
+| Jacobi `q_curr` / `q_next` double buffer + swap | Done |
+| Warp = frame, lane = DOF within 32-frame tiles | Done (`frames_per_tile` default 256 = 8 warps/tile) |
+| fastfk `spatial_local` 6×6 `J` + 6D DLS | Done (`kernels/ur3e_link_task_spatial_local_best/tool0/`) |
+| Retarget params in `__constant__` memory | Done (`c_rt_params`, `retarget_gpu_set_params`) |
+| Temporal vel/acc + neutral-pose gradient | Done (boundary one-sided velocity; interior acc) |
+| Joint-limit projection | Done |
+| Initial ``q`` = neutral; Jacobi pose/temporal on device | Done (no per-frame host IK; `pack_initial_gpu_q`) |
+| Optional elbow refine (Pinocchio) | Done when `elbow_branch` > 0 |
+| Long trajectories (> SMEM) | Skipped (`trajectory_fits_gpu_shmem`; no host windowing) |
+| Full NLopt cost stack on GPU | Not planned (DLS + temporal grad per Registers section) |
+| Constant-memory full kinematic tree | Not needed (symbolic FK in device codegen) |
+| Multi-robot / humanoid kernels | Future (UR3e tool0 only) |
+
+Regenerate device FK after kernel updates: `uv run python scripts/generate_device_fk.py` then `./scripts/build_native.sh`.

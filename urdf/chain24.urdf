@@ -1,0 +1,172 @@
+<?xml version="1.0"?>
+<robot name="chain24">
+  <link name="base"/>
+  <joint name="j0" type="revolute">
+    <parent link="base"/><child link="link1"/>
+    <origin xyz="0.12 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link1"/>
+  <joint name="j1" type="revolute">
+    <parent link="link1"/><child link="link2"/>
+    <origin xyz="0.13 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link2"/>
+  <joint name="j2" type="revolute">
+    <parent link="link2"/><child link="link3"/>
+    <origin xyz="0.14 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link3"/>
+  <joint name="j3" type="revolute">
+    <parent link="link3"/><child link="link4"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link4"/>
+  <joint name="j4" type="revolute">
+    <parent link="link4"/><child link="link5"/>
+    <origin xyz="0.12 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link5"/>
+  <joint name="j5" type="revolute">
+    <parent link="link5"/><child link="link6"/>
+    <origin xyz="0.13 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link6"/>
+  <joint name="j6" type="revolute">
+    <parent link="link6"/><child link="link7"/>
+    <origin xyz="0.14 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link7"/>
+  <joint name="j7" type="revolute">
+    <parent link="link7"/><child link="link8"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link8"/>
+  <joint name="j8" type="revolute">
+    <parent link="link8"/><child link="link9"/>
+    <origin xyz="0.12 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link9"/>
+  <joint name="j9" type="revolute">
+    <parent link="link9"/><child link="link10"/>
+    <origin xyz="0.13 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link10"/>
+  <joint name="j10" type="revolute">
+    <parent link="link10"/><child link="link11"/>
+    <origin xyz="0.14 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link11"/>
+  <joint name="j11" type="revolute">
+    <parent link="link11"/><child link="link12"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link12"/>
+  <joint name="j12" type="revolute">
+    <parent link="link12"/><child link="link13"/>
+    <origin xyz="0.12 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link13"/>
+  <joint name="j13" type="revolute">
+    <parent link="link13"/><child link="link14"/>
+    <origin xyz="0.13 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link14"/>
+  <joint name="j14" type="revolute">
+    <parent link="link14"/><child link="link15"/>
+    <origin xyz="0.14 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link15"/>
+  <joint name="j15" type="revolute">
+    <parent link="link15"/><child link="link16"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link16"/>
+  <joint name="j16" type="revolute">
+    <parent link="link16"/><child link="link17"/>
+    <origin xyz="0.12 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link17"/>
+  <joint name="j17" type="revolute">
+    <parent link="link17"/><child link="link18"/>
+    <origin xyz="0.13 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link18"/>
+  <joint name="j18" type="revolute">
+    <parent link="link18"/><child link="link19"/>
+    <origin xyz="0.14 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link19"/>
+  <joint name="j19" type="revolute">
+    <parent link="link19"/><child link="link20"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link20"/>
+  <joint name="j20" type="revolute">
+    <parent link="link20"/><child link="link21"/>
+    <origin xyz="0.12 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link21"/>
+  <joint name="j21" type="revolute">
+    <parent link="link21"/><child link="link22"/>
+    <origin xyz="0.13 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link22"/>
+  <joint name="j22" type="revolute">
+    <parent link="link22"/><child link="link23"/>
+    <origin xyz="0.14 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link23"/>
+  <joint name="j23" type="revolute">
+    <parent link="link23"/><child link="link24"/>
+    <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.14" upper="3.14" effort="1" velocity="1"/>
+  </joint>
+  <link name="link24"/>
+</robot>

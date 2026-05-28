@@ -44,11 +44,18 @@ Cache layout: `data/droid_100/` with sharded `.npy` observations and `metadata/m
 uv run cs179 retarget --dataset-url DROID_100
 ```
 
-Headless batch (no Meshcat, no plots):
+Headless batch GPU (no Meshcat during run; save joints for replay over SSH):
 
 ```bash
 uv run cs179 retarget --dataset-url DROID_100 \
-  --disable-visualization --no-plots
+  --gpu --disable-visualization --no-plots --save-joints
+```
+
+Replay later (forward port 7000, open http://127.0.0.1:7000/static/ on your laptop):
+
+```bash
+ssh -L 7000:localhost:7000 -L 6000:localhost:6000 user@host
+uv run cs179 retarget replay --demo 0
 ```
 
 First run builds or loads a reach envelope under `data/reach_envelopes/`. Defaults: **64×128** bins, **10M** FK samples. Use smaller values for a quick try:
