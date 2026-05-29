@@ -150,6 +150,11 @@ void bind_cuda(pybind11::module_& m) {
         py::arg("params"));
 
     m.def(
+        "retarget_gpu_block_shmem_limit_bytes",
+        &cs179::retarget_gpu_block_shmem_limit_bytes,
+        py::arg("device_index") = 0);
+
+    m.def(
         "retarget_trajectories_gpu",
         [](py::array_t<float, py::array::c_style> q_in,
            py::array_t<float, py::array::c_style> targets,

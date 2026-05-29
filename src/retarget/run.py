@@ -52,6 +52,7 @@ from .gpu import (
     max_gpu_trajectory_frames,
     pad_time,
     prepare_cartesian_for_gpu_batch,
+    query_gpu_block_shmem_bytes,
     query_gpu_free_bytes,
     retarget_cartesian_trajectories,
     retarget_cartesian_trajectory,
@@ -623,6 +624,7 @@ def run(
     print(f"Using reach_safety={reach_safety} for workspace scaling")
     gpu_fk_model = load_gpu_fk_model() if use_gpu else None
     if use_gpu:
+        gpu_shmem_limit = query_gpu_block_shmem_bytes()
         gpu_t_pad_limit = max_gpu_trajectory_frames(gpu_fk_model.nv)
         print(
             "Retarget backend: GPU trajectory (pose DLS + temporal + refine; "
@@ -630,7 +632,7 @@ def run(
         )
         print(
             f"GPU trajectory limit: {gpu_t_pad_limit} padded frames per block "
-            f"(from shared-memory budget; longer demos are skipped)"
+            f"(~{gpu_shmem_limit // 1024} KiB dynamic SMEM; longer demos are skipped)"
         )
     else:
         print("Retarget backend: CPU per-frame optimizer")

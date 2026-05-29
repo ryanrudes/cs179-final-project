@@ -166,7 +166,7 @@ Since we need to be as efficient as possible with register usage, I have already
 | Joint-limit projection | Done |
 | Initial ``q`` = neutral; Jacobi pose/temporal on device | Done (no per-frame host IK; `pack_initial_gpu_q`) |
 | Optional elbow refine (Pinocchio) | Done when `elbow_branch` > 0 |
-| Long trajectories (> SMEM) | Skipped (`trajectory_fits_gpu_shmem`; no host windowing) |
+| Long trajectories (> SMEM) | Skipped (`trajectory_fits_gpu_shmem` uses device opt-in SMEM limit; no host windowing) |
 | Full NLopt cost stack on GPU | Not planned (DLS + temporal grad per Registers section) |
 | Constant-memory full kinematic tree | Not needed (symbolic FK in device codegen) |
 | Multi-robot / humanoid kernels | Future (UR3e tool0 only) |

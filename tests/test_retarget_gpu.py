@@ -14,6 +14,7 @@ from retarget.gpu import (
     load_gpu_fk_model,
     max_gpu_batch_demoes,
     max_gpu_trajectory_frames,
+    query_gpu_block_shmem_bytes,
     trajectory_fits_gpu_shmem,
     pad_time,
     pack_targets,
@@ -176,6 +177,18 @@ def test_use_rotation_dls_matches_pose(gpu_fk):
         rot_errs.append(float(np.linalg.norm(err6[3:])))
     assert float(np.mean(pos_errs)) < 0.02
     assert float(np.mean(rot_errs)) < 0.15
+
+
+def test_query_gpu_block_shmem_at_least_static_cap(gpu_fk):
+    del gpu_fk
+    assert query_gpu_block_shmem_bytes() >= 48 * 1024
+
+
+def test_max_gpu_trajectory_frames_exceeds_legacy_48kib_cap_on_optin_gpus(gpu_fk):
+    del gpu_fk
+    if query_gpu_block_shmem_bytes() <= 48 * 1024:
+        pytest.skip("device has no opt-in SMEM above 48 KiB")
+    assert max_gpu_trajectory_frames(6) > 736
 
 
 def test_retarget_cartesian_trajectory_api(gpu_fk):

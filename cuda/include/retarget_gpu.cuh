@@ -72,6 +72,9 @@ void retarget_trajectories_gpu(
 
 [[nodiscard]] std::size_t retarget_gpu_shmem_bytes(const RetargetGpuParams& params);
 
+/// ``max(sharedMemPerBlock, sharedMemPerBlockOptin)`` for the given device (matches launch checks).
+[[nodiscard]] std::size_t retarget_gpu_block_shmem_limit_bytes(int device_index = 0);
+
 /// Per-warp ``dq`` scratch in dynamic shared memory (``frames_per_tile / 32`` warps).
 [[nodiscard]] std::size_t retarget_gpu_warp_scratch_bytes(int frames_per_tile);
 

@@ -28,18 +28,21 @@ if TYPE_CHECKING:
 
 _GPU_NATIVE = None
 _GPU_SHMEM_BYTES = None
+_GPU_BLOCK_SHMEM_LIMIT = None
 try:
     from cs179._native import (
+        retarget_gpu_block_shmem_limit_bytes as _retarget_gpu_block_shmem_limit_bytes,
         retarget_gpu_shmem_bytes as _retarget_gpu_shmem_bytes,
         retarget_trajectories_gpu as _retarget_trajectories_gpu,
     )
 
     _GPU_NATIVE = _retarget_trajectories_gpu
     _GPU_SHMEM_BYTES = _retarget_gpu_shmem_bytes
+    _GPU_BLOCK_SHMEM_LIMIT = _retarget_gpu_block_shmem_limit_bytes
 except ImportError:
     pass
 
-# Conservative default when CUDA device props are unavailable from Python.
+# Fallback when CUDA device props are unavailable (matches legacy static cap).
 _DEFAULT_GPU_SHMEM_LIMIT = 48 * 1024
 # Device malloc budget when ``nvidia-smi`` is unavailable (q_in, q_out, targets, scales).
 _DEFAULT_GPU_BATCH_BUDGET_BYTES = 2 * 1024**3
@@ -65,20 +68,34 @@ def gpu_retarget_built() -> bool:
     return _GPU_NATIVE is not None
 
 
+@lru_cache(maxsize=8)
+def query_gpu_block_shmem_bytes(device_index: int = 0) -> int:
+    """Per-block dynamic SMEM limit (``max(static, opt-in)``), matching the CUDA launch path."""
+    if _GPU_BLOCK_SHMEM_LIMIT is not None:
+        return int(_GPU_BLOCK_SHMEM_LIMIT(device_index))
+    return _DEFAULT_GPU_SHMEM_LIMIT
+
+
 def max_gpu_trajectory_frames(
     n_dof: int = 6,
     *,
     shmem_limit: int | None = None,
+    device_index: int = 0,
 ) -> int:
     """Max ``T_pad`` (32-aligned) that fits in one block's shared memory."""
     if _GPU_SHMEM_BYTES is None:
         return 0
     from cs179._native import RetargetGpuParams
 
-    limit = shmem_limit if shmem_limit is not None else _DEFAULT_GPU_SHMEM_LIMIT
+    limit = (
+        shmem_limit
+        if shmem_limit is not None
+        else query_gpu_block_shmem_bytes(device_index)
+    )
     params = RetargetGpuParams()
     params.n_dof = n_dof
     params.d_pad = pad_dof(n_dof)
+    params.frames_per_tile = 256
     for t in range(32, 8192 + 1, 32):
         params.t_pad = t
         if int(_GPU_SHMEM_BYTES(params)) > limit:

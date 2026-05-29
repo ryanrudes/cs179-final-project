@@ -575,6 +575,18 @@ std::size_t retarget_gpu_shmem_bytes(const RetargetGpuParams& params) {
            retarget_gpu_warp_scratch_bytes(frames);
 }
 
+std::size_t retarget_gpu_block_shmem_limit_bytes(int device_index) {
+    int device = device_index;
+    if (device < 0) {
+        check_cuda(cudaGetDevice(&device), "cudaGetDevice");
+    }
+    cudaDeviceProp prop{};
+    check_cuda(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties");
+    return std::max(
+        static_cast<std::size_t>(prop.sharedMemPerBlock),
+        static_cast<std::size_t>(prop.sharedMemPerBlockOptin));
+}
+
 void retarget_trajectories_gpu(
     const float* q_in,
     float* q_out,
@@ -609,9 +621,7 @@ void retarget_trajectories_gpu(
     check_cuda(cudaGetDevice(&device), "cudaGetDevice");
     cudaDeviceProp prop{};
     check_cuda(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties");
-    const std::size_t shmem_limit = std::max(
-        static_cast<std::size_t>(prop.sharedMemPerBlock),
-        static_cast<std::size_t>(prop.sharedMemPerBlockOptin));
+    const std::size_t shmem_limit = retarget_gpu_block_shmem_limit_bytes(device);
     if (shmem > shmem_limit) {
         throw std::runtime_error(
             "trajectory too long for GPU shared memory (need " + std::to_string(shmem) +
