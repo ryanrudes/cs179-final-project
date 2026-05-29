@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import shutil
+import subprocess
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,6 +41,12 @@ except ImportError:
 
 # Conservative default when CUDA device props are unavailable from Python.
 _DEFAULT_GPU_SHMEM_LIMIT = 48 * 1024
+# Device malloc budget when ``nvidia-smi`` is unavailable (q_in, q_out, targets, scales).
+_DEFAULT_GPU_BATCH_BUDGET_BYTES = 2 * 1024**3
+_DEFAULT_GPU_MEM_FRACTION = 0.5
+_LAUNCH_CUDA_OVERHEAD_BYTES = 64 * 1024 * 1024
+# Host packs full ``(n_traj, d_pad, t_pad)`` arrays before H2D; cap count even when VRAM fits more.
+_MAX_GPU_TRAJECTORIES_PER_LAUNCH = 512
 
 _ROOT = Path(__file__).resolve().parents[2]
 # fastfk kernels under ``kernels/`` were generated from this URDF.
@@ -83,6 +92,136 @@ def trajectory_fits_gpu_shmem(t_len: int, n_dof: int = 6) -> bool:
     if max_t_pad <= 0:
         return False
     return pad_time(int(t_len)) <= max_t_pad
+
+
+def query_gpu_free_bytes(device_index: int = 0) -> int:
+    """Free device memory (bytes) via ``nvidia-smi``, or a conservative default."""
+    if shutil.which("nvidia-smi") is None:
+        return _DEFAULT_GPU_BATCH_BUDGET_BYTES
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                f"--id={device_index}",
+                "--query-gpu=memory.free",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+        ).strip()
+        mib = int(out.splitlines()[0].strip())
+        return max(0, mib) * 1024 * 1024
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return _DEFAULT_GPU_BATCH_BUDGET_BYTES
+
+
+def estimate_gpu_launch_bytes(n_traj: int, t_pad: int, n_dof: int) -> int:
+    """Host + device buffers for one ``retarget_trajectories_gpu`` launch."""
+    if n_traj <= 0:
+        return 0
+    d_pad = pad_dof(n_dof)
+    per_traj = (
+        2 * d_pad * t_pad * 4  # q_in + q_out
+        + t_pad * 6 * 4  # targets
+        + t_pad * 4  # position_scales (optional buffer)
+        + 64  # lengths slot overhead
+    )
+    return n_traj * per_traj + _LAUNCH_CUDA_OVERHEAD_BYTES
+
+
+def max_gpu_batch_demoes(
+    t_pad: int,
+    n_dof: int = 6,
+    *,
+    mem_budget_bytes: int | None = None,
+    mem_fraction: float = _DEFAULT_GPU_MEM_FRACTION,
+    max_trajectories: int = _MAX_GPU_TRAJECTORIES_PER_LAUNCH,
+) -> int:
+    """Largest demo count for one launch at fixed batch ``t_pad``."""
+    if t_pad <= 0:
+        return 1
+    budget = mem_budget_bytes
+    if budget is None:
+        budget = int(query_gpu_free_bytes() * mem_fraction)
+    per_traj = max(1, estimate_gpu_launch_bytes(1, t_pad, n_dof) - _LAUNCH_CUDA_OVERHEAD_BYTES)
+    by_mem = max(1, budget // per_traj)
+    return max(1, min(by_mem, max_trajectories))
+
+
+def iter_gpu_demo_batches(
+    demos: Iterator[tuple[int, np.ndarray, np.ndarray]],
+    *,
+    n_dof: int = 6,
+    mem_budget_bytes: int | None = None,
+    mem_fraction: float = _DEFAULT_GPU_MEM_FRACTION,
+    max_trajectories: int = _MAX_GPU_TRAJECTORIES_PER_LAUNCH,
+) -> Iterator[list[tuple[int, np.ndarray, np.ndarray]]]:
+    """Group demos into GPU launches that fit device memory (variable ``T_pad`` per batch)."""
+    budget = mem_budget_bytes
+    if budget is None:
+        budget = int(query_gpu_free_bytes() * mem_fraction)
+
+    batch: list[tuple[int, np.ndarray, np.ndarray]] = []
+    max_len = 0
+
+    def batch_limits(max_t: int) -> tuple[int, int]:
+        t_pad = pad_time(max_t)
+        max_count = max_gpu_batch_demoes(
+            t_pad,
+            n_dof,
+            mem_budget_bytes=budget,
+            max_trajectories=max_trajectories,
+        )
+        max_bytes = estimate_gpu_launch_bytes(max_count, t_pad, n_dof)
+        return max_count, max_bytes
+
+    for item in demos:
+        _demo_idx, _joint, cartesian = item
+        t_len = int(len(cartesian))
+        if not trajectory_fits_gpu_shmem(t_len, n_dof):
+            continue
+        new_max = max(max_len, t_len)
+        new_count = len(batch) + 1
+        max_count, max_bytes = batch_limits(new_max)
+        if batch and (
+            new_count > max_count or estimate_gpu_launch_bytes(new_count, pad_time(new_max), n_dof) > max_bytes
+        ):
+            yield batch
+            batch = [item]
+            max_len = t_len
+        else:
+            batch.append(item)
+            max_len = new_max
+    if batch:
+        yield batch
+
+
+def prepare_cartesian_for_gpu_batch(
+    demos: list[tuple[int, np.ndarray, np.ndarray]],
+    envelope,
+    *,
+    reach_safety: float,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Unwrap Euler angles and reach-scale XYZ in one vectorized native call per batch."""
+    if not demos:
+        return [], []
+    prepared: list[np.ndarray] = []
+    scales_list: list[np.ndarray] = []
+    xyz_blocks: list[np.ndarray] = []
+    for _demo_idx, _joint, cartesian in demos:
+        cart = np.asarray(cartesian, dtype=np.float32).copy()
+        cart[:, 3:6] = unwrap_euler_targets(cart[:, 3:6])
+        prepared.append(cart)
+        xyz_blocks.append(cart[:, :3])
+    all_xyz = np.ascontiguousarray(np.vstack(xyz_blocks), dtype=np.float64)
+    scaled_xyz, all_scales = envelope.scale_positions(all_xyz, safety=reach_safety)
+    offset = 0
+    for cart in prepared:
+        n = len(cart)
+        cart[:, :3] = np.asarray(scaled_xyz[offset : offset + n], dtype=np.float32)
+        scales_list.append(np.asarray(all_scales[offset : offset + n], dtype=np.float32))
+        offset += n
+    return prepared, scales_list
 
 
 def pad_dof(n_dof: int) -> int:

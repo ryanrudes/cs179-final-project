@@ -368,7 +368,7 @@ __device__ float temporal_grad_d(
         const float dq_mm = joint_difference(qm, qmm);
         const float acc = (dq_tm - dq_mm) * hz2 / acc_unit;
         grad += 2.0f * c_rt_params.joint_acc_weight * acc * (hz2 / acc_unit);
-    } else if (t == t_len - 1 && t_len > 1) {
+    } else if (t == t_len - 1 && t_len > 2) {
         const float qm = read_q(q_read, d, t - 1, t_pad, n_dof);
         const float qmm = read_q(q_read, d, t - 2, t_pad, n_dof);
         const float dq_m = joint_difference(qd, qm);

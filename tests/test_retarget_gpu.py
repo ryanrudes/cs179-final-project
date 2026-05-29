@@ -8,8 +8,11 @@ import pytest
 from retarget.config import load_retarget_config
 from retarget.core import Retargeter, pose_log6_error, target_to_se3, tool_frame_id
 from retarget.gpu import (
+    estimate_gpu_launch_bytes,
     gpu_retarget_built,
+    iter_gpu_demo_batches,
     load_gpu_fk_model,
+    max_gpu_batch_demoes,
     max_gpu_trajectory_frames,
     trajectory_fits_gpu_shmem,
     pad_time,
@@ -199,6 +202,27 @@ def test_retarget_cartesian_trajectory_api(gpu_fk):
     assert max_frames >= 48
 
 
+def test_gpu_retarget_two_frame_trajectory(gpu_fk):
+    """Regression: t_len=2 must not OOB-read t-2 in temporal acceleration stencil."""
+    model = gpu_fk
+    config = load_retarget_config()
+    data = model.createData()
+    pin.forwardKinematics(model, data, pin.neutral(model))
+    pin.updateFramePlacements(model, data)
+    frame_id = tool_frame_id(model, config.frames.tool)
+    oM0 = data.oMf[frame_id]
+    from scipy.spatial.transform import Rotation as R
+
+    e0 = R.from_matrix(oM0.rotation).as_euler("xyz")
+    base = np.array(
+        [oM0.translation[0], oM0.translation[1], oM0.translation[2], e0[0], e0[1], e0[2]],
+        dtype=np.float32,
+    )
+    targets = np.tile(base, (2, 1))
+    q_traj = retarget_cartesian_trajectory(model, targets, config)
+    assert q_traj.shape == (2, model.nv)
+
+
 def test_gpu_trajectory_over_shmem_limit_rejected(gpu_fk):
     """Trajectories longer than the SMEM budget are rejected (not windowed)."""
     model = gpu_fk
@@ -233,6 +257,68 @@ def test_spatial_jacobian_matches_pinocchio(gpu_fk):
     rng = np.random.default_rng(0)
     q_samples = rng.normal(0, 0.4, (16, 6))
     assert max_spatial_jacobian_error(gpu_fk, q_samples) < 1.0e-5
+
+
+def test_iter_gpu_demo_batches_respects_memory_budget(gpu_fk):
+    """Greedy batching splits when padded T_pad grows the launch allocation."""
+    model = gpu_fk
+    n_dof = model.nv
+    budget = estimate_gpu_launch_bytes(2, pad_time(64), n_dof)
+
+    def stream():
+        for i in range(6):
+            cart = np.zeros((32 + 8 * i, 6), dtype=np.float32)
+            yield i, np.zeros((len(cart), 7), dtype=np.float32), cart
+
+    batches = list(
+        iter_gpu_demo_batches(
+            stream(),
+            n_dof=n_dof,
+            mem_budget_bytes=budget,
+            max_trajectories=2,
+        )
+    )
+    assert len(batches) >= 2
+    assert sum(len(b) for b in batches) == 6
+    for batch in batches:
+        assert len(batch) <= 2
+        max_len = max(len(c) for _i, _j, c in batch)
+        t_pad = pad_time(max_len)
+        assert estimate_gpu_launch_bytes(len(batch), t_pad, n_dof) <= estimate_gpu_launch_bytes(
+            2, t_pad, n_dof
+        )
+
+
+def test_max_gpu_batch_demoes_positive(gpu_fk):
+    n = max_gpu_batch_demoes(pad_time(128), gpu_fk.nv, mem_budget_bytes=512 * 1024**2)
+    assert n >= 1
+
+
+def test_max_gpu_batch_demoes_capped_by_launch_limit(gpu_fk):
+    n = max_gpu_batch_demoes(pad_time(32), gpu_fk.nv, mem_budget_bytes=1024**4)
+    from retarget.gpu import _MAX_GPU_TRAJECTORIES_PER_LAUNCH
+
+    assert n == _MAX_GPU_TRAJECTORIES_PER_LAUNCH
+
+
+def test_iter_gpu_demo_batches_splits_at_trajectory_cap(gpu_fk):
+    from retarget.gpu import _MAX_GPU_TRAJECTORIES_PER_LAUNCH
+
+    model = gpu_fk
+    n_dof = model.nv
+    big_budget = 1024**4
+
+    def stream():
+        for i in range(_MAX_GPU_TRAJECTORIES_PER_LAUNCH + 4):
+            cart = np.zeros((32, 6), dtype=np.float32)
+            yield i, np.zeros((32, 7), dtype=np.float32), cart
+
+    batches = list(
+        iter_gpu_demo_batches(stream(), n_dof=n_dof, mem_budget_bytes=big_budget)
+    )
+    assert len(batches) >= 2
+    assert all(len(b) <= _MAX_GPU_TRAJECTORIES_PER_LAUNCH for b in batches)
+    assert sum(len(b) for b in batches) == _MAX_GPU_TRAJECTORIES_PER_LAUNCH + 4
 
 
 def test_gpu_vs_cpu_synthetic_trajectory(gpu_fk):

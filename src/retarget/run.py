@@ -44,9 +44,15 @@ from .cache import (
     write_metadata,
 )
 from .gpu import (
+    estimate_gpu_launch_bytes,
     gpu_retarget_built,
+    iter_gpu_demo_batches,
     load_gpu_fk_model,
+    max_gpu_batch_demoes,
     max_gpu_trajectory_frames,
+    pad_time,
+    prepare_cartesian_for_gpu_batch,
+    query_gpu_free_bytes,
     retarget_cartesian_trajectories,
     retarget_cartesian_trajectory,
     trajectory_fits_gpu_shmem,
@@ -329,68 +335,68 @@ def _retarget_demos_batch_gpu(
     show_plots: bool,
     save_output_dir: Path | None = None,
 ) -> list[RetargetDemoRecord]:
-    """Batch GPU retarget (no per-frame callbacks). Optionally write joint caches."""
+    """One GPU launch worth of demos: reach-scale targets, kernel, optional save (no eval by default)."""
     saved: list[RetargetDemoRecord] = []
-    cartesian_list: list[np.ndarray] = []
-    scales_list: list[np.ndarray] = []
-    elbow_list: list[np.ndarray] = []
-    joint_by_demo: list[np.ndarray] = []
+    need_eval = stats_batch is not None or show_plots
+    cartesian_list, scales_list = prepare_cartesian_for_gpu_batch(
+        demos, ur3e_reach, reach_safety=reach_safety
+    )
 
-    for _demo_idx, joint_positions, cartesian_positions in demos:
-        cartesian_positions, radial_scales = _prepare_demo_cartesian(
-            cartesian_positions, ur3e_reach, reach_safety
-        )
-        elbow_sides = demo_elbow_side_targets(
-            joint_positions, panda_model, panda_data, frame_names=config.frames.panda_elbow
-        )
-        cartesian_list.append(cartesian_positions)
-        scales_list.append(radial_scales)
-        elbow_list.append(elbow_sides)
-        joint_by_demo.append(joint_positions)
+    elbow_list = None
+    if config.cost.weights.elbow_branch > 0.0:
+        elbow_list = [
+            demo_elbow_side_targets(
+                joint_positions,
+                panda_model,
+                panda_data,
+                frame_names=config.frames.panda_elbow,
+            )
+            for _demo_idx, joint_positions, _cartesian in demos
+        ]
 
     q_trajs = retarget_cartesian_trajectories(
         model,
         cartesian_list,
         config,
-        position_scales_list=scales_list,
         elbow_targets_list=elbow_list,
     )
 
-    for (demo_idx, _joint_positions, cartesian_positions), joint_traj, radial_scales in zip(
-        demos, q_trajs, scales_list, strict=True
+    for (demo_idx, _joint_positions, _raw_cartesian), joint_traj, cart_scaled, radial_scales in zip(
+        demos, q_trajs, cartesian_list, scales_list, strict=True
     ):
-        positions, rot_vecs, pos_errs, rot_errs, frame_metrics = _evaluate_retargeted_demo(
-            model=model,
-            joint_traj=joint_traj,
-            cartesian_positions=cartesian_positions,
-            radial_scales=radial_scales,
-            control_hz=control_hz,
-            config=config,
-            viz=None,
-            on_frame=None,
-        )
-        if stats_batch is not None:
-            stats_batch.add_demo(
-                compute_demo_stats(
-                    demo_idx=demo_idx,
-                    position_errors=frame_metrics.position_errors,
-                    rotation_errors=frame_metrics.rotation_errors,
-                    radial_scales=frame_metrics.radial_scales,
-                    joint_speeds=frame_metrics.joint_speeds,
-                    ik_success=frame_metrics.ik_success,
-                    ik_iterations=frame_metrics.ik_iterations,
-                ),
-                frame_metrics,
+        if need_eval:
+            positions, rot_vecs, pos_errs, rot_errs, frame_metrics = _evaluate_retargeted_demo(
+                model=model,
+                joint_traj=joint_traj,
+                cartesian_positions=cart_scaled,
+                radial_scales=radial_scales,
+                control_hz=control_hz,
+                config=config,
+                viz=None,
+                on_frame=None,
             )
-        if show_plots:
-            _plot_demo_errors(
-                num_frames=len(cartesian_positions),
-                cartesian_positions=cartesian_positions,
-                positions=positions,
-                rotation_error_vectors=rot_vecs,
-                position_errors=pos_errs,
-                rotation_errors=rot_errs,
-            )
+            if stats_batch is not None:
+                stats_batch.add_demo(
+                    compute_demo_stats(
+                        demo_idx=demo_idx,
+                        position_errors=frame_metrics.position_errors,
+                        rotation_errors=frame_metrics.rotation_errors,
+                        radial_scales=frame_metrics.radial_scales,
+                        joint_speeds=frame_metrics.joint_speeds,
+                        ik_success=frame_metrics.ik_success,
+                        ik_iterations=frame_metrics.ik_iterations,
+                    ),
+                    frame_metrics,
+                )
+            if show_plots:
+                _plot_demo_errors(
+                    num_frames=len(cart_scaled),
+                    cartesian_positions=cart_scaled,
+                    positions=positions,
+                    rotation_error_vectors=rot_vecs,
+                    position_errors=pos_errs,
+                    rotation_errors=rot_errs,
+                )
         if save_output_dir is not None:
             rel = save_joint_trajectory(save_output_dir, demo_idx, joint_traj)
             saved.append(
@@ -401,6 +407,117 @@ def _retarget_demos_batch_gpu(
                 )
             )
     return saved
+
+
+def _stream_retarget_dataset_batch_gpu(
+    *,
+    loader: RldsObservationLoader,
+    start_demo: int,
+    end_demo: int | None,
+    model: pin.Model,
+    ur3e_reach: DirectionalReachEnvelope,
+    panda_model: pin.Model,
+    panda_data: pin.Data,
+    config: RetargetConfig,
+    reach_safety: float,
+    stats_batch: BatchStatsAccumulator | None,
+    control_hz: float,
+    show_plots: bool,
+    save_output_dir: Path | None,
+    gpu_t_pad_limit: int,
+) -> tuple[list[RetargetDemoRecord], list[tuple[int, int]]]:
+    """Stream demos in GPU-sized chunks with a progress bar (no full-dataset RAM load)."""
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    end = len(loader) if end_demo is None else min(end_demo, len(loader))
+    demo_lengths = loader.demo_lengths
+    eligible = sum(
+        1
+        for i in range(start_demo, end)
+        if trajectory_fits_gpu_shmem(int(demo_lengths[i]), model.nv)
+    )
+    skipped: list[tuple[int, int]] = [
+        (i, int(demo_lengths[i]))
+        for i in range(start_demo, end)
+        if not trajectory_fits_gpu_shmem(int(demo_lengths[i]), model.nv)
+    ]
+
+    mem_budget = int(query_gpu_free_bytes() * 0.5)
+    eligible_lengths = [
+        int(demo_lengths[i])
+        for i in range(start_demo, end)
+        if trajectory_fits_gpu_shmem(int(demo_lengths[i]), model.nv)
+    ]
+    worst_t_pad = (
+        min(gpu_t_pad_limit, pad_time(max(eligible_lengths)))
+        if eligible_lengths
+        else pad_time(1)
+    )
+    demos_per_launch = max_gpu_batch_demoes(
+        worst_t_pad, model.nv, mem_budget_bytes=mem_budget
+    )
+    print(
+        f"GPU batch retarget: {eligible:,} demo(s), device budget ~{mem_budget // (1024**2):,} MiB, "
+        f"≤{demos_per_launch:,} demos/launch at T_pad≤{worst_t_pad} "
+        f"(skipped {len(skipped):,} over {gpu_t_pad_limit} frames)"
+    )
+
+    def demo_stream():
+        for demo_idx, demo in enumerate(
+            iter_retarget_demos(loader=loader, start_demo=start_demo, end_demo=end_demo),
+            start=start_demo,
+        ):
+            joint_positions, _gripper, cartesian = demo
+            if trajectory_fits_gpu_shmem(len(cartesian), model.nv):
+                yield demo_idx, joint_positions, cartesian
+
+    saved_all: list[RetargetDemoRecord] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+    ) as progress:
+        task = progress.add_task("GPU retarget", total=max(eligible, 1), unit="demo")
+        batch_idx = 0
+        for batch in iter_gpu_demo_batches(demo_stream(), n_dof=model.nv, mem_budget_bytes=mem_budget):
+            batch_idx += 1
+            max_len = max(len(cart) for _i, _j, cart in batch)
+            t_pad = pad_time(max_len)
+            progress.update(
+                task,
+                description=(
+                    f"GPU batch {batch_idx} ({len(batch)} demos, T_pad={t_pad}, "
+                    f"~{estimate_gpu_launch_bytes(len(batch), t_pad, model.nv) // (1024**2)} MiB)"
+                ),
+            )
+            saved_all.extend(
+                _retarget_demos_batch_gpu(
+                    demos=batch,
+                    model=model,
+                    ur3e_reach=ur3e_reach,
+                    panda_model=panda_model,
+                    panda_data=panda_data,
+                    config=config,
+                    reach_safety=reach_safety,
+                    stats_batch=stats_batch,
+                    control_hz=control_hz,
+                    show_plots=show_plots,
+                    save_output_dir=save_output_dir,
+                )
+            )
+            progress.advance(task, len(batch))
+    return saved_all, skipped
 
 
 def _plot_demo_errors(
@@ -636,22 +753,24 @@ def run(
         )
 
     if not show_progress:
-        demo_iter = list(
-            enumerate(
-                iter_retarget_demos(loader=loader, start_demo=start_demo, end_demo=end_demo),
-                start=start_demo,
-            )
-        )
-        if use_gpu and viz is None and not show_plots and demo_iter:
+        if use_gpu and viz is None and not show_plots and demo_count > 0:
             assert gpu_fk_model is not None
-            batch_demos = []
-            skipped: list[tuple[int, int]] = []
-            for demo_idx, (joint_positions, _gripper, cartesian_positions) in demo_iter:
-                t_len = len(cartesian_positions)
-                if trajectory_fits_gpu_shmem(t_len, gpu_fk_model.nv):
-                    batch_demos.append((demo_idx, joint_positions, cartesian_positions))
-                else:
-                    skipped.append((demo_idx, t_len))
+            saved_records, skipped = _stream_retarget_dataset_batch_gpu(
+                loader=loader,
+                start_demo=start_demo,
+                end_demo=end_demo,
+                model=gpu_fk_model,
+                ur3e_reach=ur3e_reach,
+                panda_model=panda_robot.model,
+                panda_data=panda_data,
+                config=retarget_config,
+                reach_safety=reach_safety,
+                stats_batch=stats_batch,
+                control_hz=demo_control_hz,
+                show_plots=show_plots,
+                save_output_dir=save_output_dir,
+                gpu_t_pad_limit=gpu_t_pad_limit,
+            )
             if skipped:
                 preview = ", ".join(f"{i}({n}f)" for i, n in skipped[:8])
                 if len(skipped) > 8:
@@ -660,48 +779,30 @@ def run(
                     f"Skipping {len(skipped)} demo(s) over GPU T_pad limit "
                     f"({gpu_t_pad_limit}): {preview}"
                 )
-            if not batch_demos:
-                print("No demos within GPU trajectory length limit.")
-            else:
-                print(
-                    f"Retarget mode: batched GPU ({len(batch_demos)} demo(s), "
-                    "one kernel launch; mixed lengths padded to max T in batch)"
-                )
-            if batch_demos:
-                saved_records = _retarget_demos_batch_gpu(
-                    demos=batch_demos,
-                    model=gpu_fk_model,
-                    ur3e_reach=ur3e_reach,
-                    panda_model=panda_robot.model,
-                    panda_data=panda_data,
-                    config=retarget_config,
+            if save_output_dir is not None and saved_records:
+                write_metadata(
+                    save_output_dir,
+                    dataset_url=str(dataset_url),
+                    robot_description=robot_description,
+                    use_gpu=True,
                     reach_safety=reach_safety,
-                    stats_batch=stats_batch,
-                    control_hz=demo_control_hz,
-                    show_plots=show_plots,
-                    save_output_dir=save_output_dir,
+                    demos=saved_records,
+                    skipped_gpu_length=[
+                        {"demo_idx": i, "num_frames": n} for i, n in skipped
+                    ],
                 )
-                if save_output_dir is not None:
-                    write_metadata(
-                        save_output_dir,
-                        dataset_url=str(dataset_url),
-                        robot_description=robot_description,
-                        use_gpu=True,
-                        reach_safety=reach_safety,
-                        demos=saved_records,
-                        skipped_gpu_length=[
-                            {"demo_idx": i, "num_frames": n} for i, n in skipped
-                        ],
-                    )
-                    out = save_output_dir.resolve()
-                    print(f"Wrote {len(saved_records)} joint trajectory(s) to {out}")
-                    print(
-                        "Replay (SSH: ssh -L 7000:localhost:7000 … then open "
-                        f"http://127.0.0.1:7000/static/):\n"
-                        f"  uv run cs179 retarget replay --save-joints-dir {out} --demo 0"
-                    )
+                out = save_output_dir.resolve()
+                print(f"Wrote {len(saved_records)} joint trajectory(s) to {out}")
+                print(
+                    "Replay (SSH: ssh -L 7000:localhost:7000 … then open "
+                    f"http://127.0.0.1:7000/static/):\n"
+                    f"  uv run cs179 retarget replay --save-joints-dir {out} --demo 0"
+                )
         else:
-            for demo_idx, (joint_positions, _gripper_positions, cartesian_positions) in demo_iter:
+            for demo_idx, (joint_positions, _gripper_positions, cartesian_positions) in enumerate(
+                iter_retarget_demos(loader=loader, start_demo=start_demo, end_demo=end_demo),
+                start=start_demo,
+            ):
                 retarget_one_demo(demo_idx, joint_positions, cartesian_positions, on_frame=None)
         if stats_batch is not None:
             print_batch_summary(
