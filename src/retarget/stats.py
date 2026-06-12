@@ -395,11 +395,20 @@ class LiveRetargetDisplay:
             self._frames_since_refresh = 0
             self.refresh()
 
-    def finish_demo(self, demo_stats: DemoStats, frames: FrameArrays) -> None:
+    def finish_demo(
+        self,
+        demo_stats: DemoStats,
+        frames: FrameArrays,
+        *,
+        refresh: bool = True,
+    ) -> None:
         self.batch.add_demo(demo_stats, frames)
         self.last_demo = demo_stats
         self.partial.clear()
-        self.refresh()
+        self._current_demo_idx = None
+        self._current_demo_frames = 0
+        if refresh:
+            self.refresh()
 
     def refresh(self) -> None:
         if self._live is None:

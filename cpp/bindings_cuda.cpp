@@ -82,6 +82,7 @@ cs179::RetargetGpuParams params_from_kwargs(
         p.use_rotation_dls = kwargs["use_rotation_dls"].cast<int>() != 0 ? 1 : 0;
     }
     get_f("rot_nu_clamp", p.rot_nu_clamp);
+    get_f("rot_row_scale", p.rot_row_scale);
 
     if (kwargs.contains("joint_velocity_error_unit")) {
         const auto arr =
@@ -213,4 +214,52 @@ void bind_cuda(pybind11::module_& m) {
         py::arg("targets"),
         py::arg("lengths"),
         py::arg("position_scales") = py::none());
+
+    m.def(
+        "evaluate_trajectories_gpu",
+        [](py::array_t<float, py::array::c_style | py::array::forcecast> q,
+           py::array_t<float, py::array::c_style | py::array::forcecast> targets,
+           py::array_t<int, py::array::c_style | py::array::forcecast> lengths,
+           int n_dof,
+           float control_hz) {
+            if (q.ndim() != 3) {
+                throw std::invalid_argument("q must have shape (n_traj, d_pad, t_pad)");
+            }
+            if (targets.ndim() != 3 || targets.shape(2) != 6) {
+                throw std::invalid_argument("targets must have shape (n_traj, t_pad, 6)");
+            }
+            if (lengths.ndim() != 1 || lengths.shape(0) != q.shape(0)) {
+                throw std::invalid_argument("lengths must have shape (n_traj,)");
+            }
+            if (targets.shape(0) != q.shape(0) || targets.shape(1) != q.shape(2)) {
+                throw std::invalid_argument("targets must align with q on traj and time axes");
+            }
+
+            const int n_traj = static_cast<int>(q.shape(0));
+            const int d_pad = static_cast<int>(q.shape(1));
+            const int t_pad = static_cast<int>(q.shape(2));
+
+            py::array_t<float> pos_err({n_traj, t_pad});
+            py::array_t<float> rot_err({n_traj, t_pad});
+            py::array_t<float> joint_speed({n_traj, t_pad});
+
+            cs179::evaluate_trajectories_gpu(
+                q.data(),
+                targets.data(),
+                lengths.data(),
+                pos_err.mutable_data(),
+                rot_err.mutable_data(),
+                joint_speed.mutable_data(),
+                n_traj,
+                d_pad,
+                t_pad,
+                n_dof,
+                control_hz);
+            return py::make_tuple(pos_err, rot_err, joint_speed);
+        },
+        py::arg("q"),
+        py::arg("targets"),
+        py::arg("lengths"),
+        py::arg("n_dof") = 6,
+        py::arg("control_hz") = 15.0f);
 }

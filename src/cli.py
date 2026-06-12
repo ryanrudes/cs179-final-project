@@ -144,6 +144,22 @@ def retarget(
             help="Skip Meshcat robot playback during IK.",
         ),
     ] = False,
+    compare_source: Annotated[
+        bool,
+        typer.Option(
+            "--compare-source",
+            help=(
+                "Show the source arm (original demo joints) beside the retargeted arm in Meshcat."
+            ),
+        ),
+    ] = False,
+    compare_separation: Annotated[
+        float,
+        typer.Option(
+            "--compare-separation",
+            help="World-frame Y separation (m) between source and target arms in --compare-source view.",
+        ),
+    ] = 1.0,
     no_plots: Annotated[
         bool,
         typer.Option(
@@ -186,8 +202,8 @@ def retarget(
             "--gpu",
             help=(
                 "Retarget on GPU (CUDA build). Headless (--disable-visualization "
-                "--no-plots) uses batched trajectories; add --live-stats for per-demo "
-                "Rich progress instead."
+                "--no-plots) uses batched trajectories; add --live-stats for the "
+                "full Rich stats panel during batched GPU runs."
             ),
         ),
     ] = False,
@@ -196,8 +212,8 @@ def retarget(
         typer.Option(
             "--live-stats",
             help=(
-                "Rich live stats panel (headless only). With --gpu, defaults to batched "
-                "GPU without this flag."
+                "Rich live stats panel (headless). With --gpu, keeps batched GPU launches "
+                "and updates the panel while evaluating each solved demo."
             ),
         ),
     ] = False,
@@ -234,6 +250,8 @@ def retarget(
     set_use_native_retarget(not no_native)
     if use_gpu and no_native:
         raise typer.BadParameter("--gpu requires a CUDA native build; omit --no-native")
+    if compare_source and disable_visualization:
+        raise typer.BadParameter("--compare-source requires Meshcat; omit --disable-visualization")
     config_path = config if config.is_file() else default_config_path()
     run_retarget(
         data_dir=data_dir,
@@ -245,7 +263,8 @@ def retarget(
         control_hz=control_hz,
         enable_visualization=not disable_visualization,
         show_plots=not no_plots,
-        show_progress=True if live_stats else None,
+        show_progress=None,
+        live_stats=live_stats,
         reach_n_samples=reach_n_samples,
         reach_n_theta=reach_n_theta,
         reach_n_phi=reach_n_phi,
@@ -255,6 +274,8 @@ def retarget(
         use_gpu=use_gpu,
         save_joints=save_joints,
         save_joints_dir=save_joints_dir,
+        compare_source=compare_source,
+        compare_separation=compare_separation,
     )
 
 
@@ -295,16 +316,46 @@ def retarget_replay(
         bool,
         typer.Option("--loop", help="Loop the trajectory until Ctrl+C."),
     ] = False,
+    compare_source: Annotated[
+        bool,
+        typer.Option(
+            "--compare-source",
+            help="Show the source arm (original demo) beside the retargeted arm.",
+        ),
+    ] = False,
+    compare_separation: Annotated[
+        float,
+        typer.Option(
+            "--compare-separation",
+            help="World-frame Y separation (m) between source and target arms.",
+        ),
+    ] = 1.0,
+    panda_description: Annotated[
+        str,
+        typer.Option("--panda", help="Source-arm description for --compare-source."),
+    ] = "panda_description",
 ) -> None:
     """Replay cached joint trajectories in Meshcat (use SSH port 7000 forwarding)."""
     from retarget.cache import default_retarget_output_dir
     from retarget.replay import replay_demo, replay_range
 
     output_dir = save_joints_dir or default_retarget_output_dir(data_dir, dataset_url)
+    replay_kwargs = {
+        "fps": fps,
+        "compare_source": compare_source,
+        "compare_separation": compare_separation,
+        "data_dir": data_dir,
+        "panda_description": panda_description,
+    }
     if demo is not None:
-        replay_demo(output_dir, demo, fps=fps, loop=loop)
+        replay_demo(output_dir, demo, loop=loop, **replay_kwargs)
     else:
-        replay_range(output_dir, start_demo=start_demo, end_demo=end_demo, fps=fps)
+        replay_range(
+            output_dir,
+            start_demo=start_demo,
+            end_demo=end_demo,
+            **replay_kwargs,
+        )
 
 
 app = typer.Typer(help="CS179 final project tools.", no_args_is_help=True)

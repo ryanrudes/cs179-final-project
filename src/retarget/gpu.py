@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 _GPU_NATIVE = None
 _GPU_SHMEM_BYTES = None
 _GPU_BLOCK_SHMEM_LIMIT = None
+_GPU_EVAL = None
 try:
     from cs179._native import (
         retarget_gpu_block_shmem_limit_bytes as _retarget_gpu_block_shmem_limit_bytes,
@@ -39,6 +40,13 @@ try:
     _GPU_NATIVE = _retarget_trajectories_gpu
     _GPU_SHMEM_BYTES = _retarget_gpu_shmem_bytes
     _GPU_BLOCK_SHMEM_LIMIT = _retarget_gpu_block_shmem_limit_bytes
+except ImportError:
+    pass
+
+try:
+    from cs179._native import evaluate_trajectories_gpu as _evaluate_trajectories_gpu
+
+    _GPU_EVAL = _evaluate_trajectories_gpu
 except ImportError:
     pass
 
@@ -66,6 +74,54 @@ def load_gpu_fk_model() -> pin.Model:
 
 def gpu_retarget_built() -> bool:
     return _GPU_NATIVE is not None
+
+
+def gpu_eval_built() -> bool:
+    """True when ``cs179._native.evaluate_trajectories_gpu`` is available (CUDA build)."""
+    return _GPU_EVAL is not None
+
+
+def evaluate_trajectories_metrics_gpu(
+    q_trajs: list[NDArray[np.floating]],
+    cartesian_list: list[NDArray[np.floating]],
+    *,
+    n_dof: int,
+    control_hz: float,
+) -> list[tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]]:
+    """Batch pose-error metrics on GPU; one launch for all demos.
+
+    Returns ``(position_errors, rotation_errors, joint_speeds)`` per demo, each
+    ``(T,)`` float64. Position error is Euclidean; rotation error matches the
+    SO(3) log norm used by the CPU evaluator.
+    """
+    if _GPU_EVAL is None:
+        raise RuntimeError("GPU trajectory evaluation not available (rebuild with CUDA)")
+    if len(q_trajs) != len(cartesian_list):
+        raise ValueError("q_trajs and cartesian_list must have the same length")
+    if not q_trajs:
+        return []
+    q_packed, lengths, _d_pad, t_pad = pack_trajectories(q_trajs, n_dof=n_dof)
+    targets = pack_targets(
+        [np.asarray(t, dtype=np.float32) for t in cartesian_list], t_pad=t_pad
+    )
+    pos_err, rot_err, speed = _GPU_EVAL(
+        q_packed,
+        targets,
+        lengths,
+        n_dof=n_dof,
+        control_hz=float(control_hz),
+    )
+    out = []
+    for i, t_len in enumerate(lengths):
+        n = int(t_len)
+        out.append(
+            (
+                np.asarray(pos_err[i, :n], dtype=np.float64),
+                np.asarray(rot_err[i, :n], dtype=np.float64),
+                np.asarray(speed[i, :n], dtype=np.float64),
+            )
+        )
+    return out
 
 
 @lru_cache(maxsize=8)
@@ -308,9 +364,9 @@ def retarget_params_from_config(
     q_neutral = q_neutral_full[:n_dof]
     return {
         "n_dof": n_dof,
-        "n_outer_iters": 6,
+        "n_outer_iters": 30,
         "n_temporal_iters": 4,
-        "n_pose_refine_iters": 4,
+        "n_pose_refine_iters": 20,
         "alpha": 0.15,
         "step_size": 0.0,
         "temporal_step_size": 5.0e-6,
@@ -436,6 +492,84 @@ def pack_initial_gpu_q(
     return pack_trajectories(q_list, n_dof=n_dof)
 
 
+# Candidate starts per demo for the GPU multi-start frame-0 seed.
+GPU_SEED_MULTISTART_K = 16
+
+
+def multistart_seed_gpu(
+    model: pin.Model,
+    cartesian_targets: list[NDArray[np.floating]],
+    config: RetargetConfig,
+    *,
+    k: int = GPU_SEED_MULTISTART_K,
+    rng_seed: int = 0,
+) -> list[NDArray[np.float32]]:
+    """Per-demo frame-0 joint seed via GPU multi-start damped-least-squares IK.
+
+    Solves ``len(cartesian_targets) * k`` length-1 trajectories in one kernel
+    launch (neutral pose plus ``k - 1`` random starts within joint limits,
+    clipped to ±π to avoid winding), scores candidates with the GPU metrics
+    kernel, and returns the best joint configuration per demo. Mirrors the role
+    of host ``seed_ik`` (unweighted DLS rows, config ``ik_seed`` step/damping)
+    without the ~15 ms/demo host cost.
+    """
+    if not cartesian_targets:
+        return []
+    n_dof = model.nv
+    if _GPU_EVAL is None:
+        # Older CUDA build without the metrics kernel: neutral seeds.
+        q_neutral = np.asarray(pin.neutral(model)[:n_dof], dtype=np.float32)
+        return [q_neutral.copy() for _ in cartesian_targets]
+    n_demos = len(cartesian_targets)
+    rng = np.random.default_rng(rng_seed)
+    lo = np.maximum(np.asarray(model.lowerPositionLimit[:n_dof]), -np.pi)
+    hi = np.minimum(np.asarray(model.upperPositionLimit[:n_dof]), np.pi)
+    q_neutral = np.asarray(pin.neutral(model)[:n_dof], dtype=np.float32)
+
+    seed_q_list: list[NDArray[np.float32]] = []
+    tgt0_list: list[NDArray[np.float32]] = []
+    for cart in cartesian_targets:
+        cands = rng.uniform(lo, hi, size=(k, n_dof)).astype(np.float32)
+        cands[0] = q_neutral
+        tgt0 = np.asarray(cart[:1], dtype=np.float32)
+        for c in cands:
+            seed_q_list.append(c.reshape(1, -1))
+            tgt0_list.append(tgt0)
+
+    q_in, lengths, _d_pad, t_pad = pack_trajectories(seed_q_list, n_dof=n_dof)
+    targets = pack_targets(tgt0_list, t_pad=t_pad)
+    kwargs = retarget_params_from_config(model, config, t_pad=t_pad, n_dof=n_dof)
+    ik = config.ik_seed
+    kwargs.update(
+        n_outer_iters=int(ik.max_iterations),
+        n_temporal_iters=0,
+        n_pose_refine_iters=0,
+        alpha=float(ik.step),
+        ik_damping=float(ik.damping),
+        rot_row_scale=1.0,  # unweighted rows, matching seed_ik
+        rot_nu_clamp=100.0,
+    )
+    q_out = retarget_trajectories_gpu(q_in, targets, lengths, None, **kwargs)
+
+    solutions = [
+        np.asarray(q_out[i, :n_dof, :1], dtype=np.float32).T for i in range(n_demos * k)
+    ]
+    metrics = evaluate_trajectories_metrics_gpu(
+        solutions,
+        [t[:1] for t in tgt0_list],
+        n_dof=n_dof,
+        control_hz=float(config.control_hz),
+    )
+    # Position dominates basin quality; small rotation term breaks ties. Keep
+    # the neutral-seeded solution (candidate 0, the CPU seeding convention)
+    # unless a random start is meaningfully better.
+    scores = np.array([m[0][0] + 0.5 * m[1][0] for m in metrics]).reshape(n_demos, k)
+    best = scores.argmin(axis=1)
+    neutral_ok = scores[:, 0] <= scores[np.arange(n_demos), best] + 1.0e-3
+    best = np.where(neutral_ok, 0, best)
+    return [solutions[d * k + int(best[d])][0] for d in range(n_demos)]
+
+
 def _retarget_cartesian_group_once(
     model: pin.Model,
     cartesian_targets: list[NDArray[np.floating]],
@@ -447,7 +581,11 @@ def _retarget_cartesian_group_once(
     """Single GPU launch; trajectories may differ in length (padded to common ``t_pad``)."""
     n_dof = model.nv
     t_lens = [int(t.shape[0]) for t in cartesian_targets]
-    q_in, lengths, _d_pad, t_pad = pack_initial_gpu_q(model, t_lens)
+    # Frame-0 multi-start seed (tiled) instead of neutral: per-frame DLS from
+    # neutral converges to bad arm configurations on roughly half the demos.
+    seeds = multistart_seed_gpu(model, cartesian_targets, config)
+    q_list = [np.tile(s, (t_len, 1)) for s, t_len in zip(seeds, t_lens, strict=True)]
+    q_in, lengths, _d_pad, t_pad = pack_trajectories(q_list, n_dof=n_dof)
     tgt_batch = pack_targets(cartesian_targets, t_pad=t_pad)
     kwargs = retarget_params_from_config(model, config, t_pad=t_pad, n_dof=n_dof)
     kwargs.update(gpu_kwargs)

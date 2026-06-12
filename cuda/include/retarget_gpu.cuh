@@ -10,11 +10,11 @@ struct RetargetGpuParams {
     int n_dof = 6;
     int d_pad = 8;
     int t_pad = 0;
-    int n_outer_iters = 6;
+    int n_outer_iters = 30;
     /// Extra temporal-only Jacobi sweeps after the pose pass (0 = pose only).
     int n_temporal_iters = 4;
     /// Pose Jacobi sweeps after temporal smoothing to recover task error.
-    int n_pose_refine_iters = 4;
+    int n_pose_refine_iters = 20;
     /// Active threads per block; must be a multiple of 32 (one warp per frame in a tile).
     int frames_per_tile = 256;
     float alpha = 0.15f;
@@ -55,6 +55,10 @@ struct RetargetGpuParams {
     int use_rotation_dls = 0;
     /// Clamp each rotational ``log6`` component before 6D DLS.
     float rot_nu_clamp = 0.5f;
+    /// Scale on rotation rows of the 6D DLS system. 0 = derive from the config
+    /// error units (CPU cost convention, position-favoring); 1 = unweighted
+    /// (matches ``seed_ik``); other values override explicitly.
+    float rot_row_scale = 0.0f;
 };
 
 /// Copy params to ``__constant__`` memory (call before each kernel launch).
@@ -69,6 +73,24 @@ void retarget_trajectories_gpu(
     const float* position_scales,
     int n_traj,
     const RetargetGpuParams& params);
+
+/// Batch trajectory metrics on GPU (FK + log6 pose error + joint speed).
+/// One thread per frame; no shared memory. Outputs are zero-padded past each
+/// trajectory's length. Layouts match ``retarget_trajectories_gpu``:
+/// ``q`` is ``(n_traj, d_pad, t_pad)``, ``targets`` is ``(n_traj, t_pad, 6)``,
+/// outputs are ``(n_traj, t_pad)``.
+void evaluate_trajectories_gpu(
+    const float* q,
+    const float* targets,
+    const int* lengths,
+    float* position_errors,
+    float* rotation_errors,
+    float* joint_speeds,
+    int n_traj,
+    int d_pad,
+    int t_pad,
+    int n_dof,
+    float control_hz);
 
 [[nodiscard]] std::size_t retarget_gpu_shmem_bytes(const RetargetGpuParams& params);
 

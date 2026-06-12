@@ -16,6 +16,7 @@ def run(
     enable_visualization: bool,
     show_plots: bool,
     show_progress: bool | None = None,
+    live_stats: bool = False,
     reach_n_samples: int,
     reach_n_theta: int,
     reach_n_phi: int,
@@ -25,6 +26,8 @@ def run(
     use_gpu: bool = False,
     save_joints: bool = False,
     save_joints_dir: Optional[Path] = None,
+    compare_source: bool = False,
+    compare_separation: float = 1.0,
 ) -> None:
     run_retarget(
         data_dir=data_dir,
@@ -37,6 +40,7 @@ def run(
         enable_visualization=enable_visualization,
         show_plots=show_plots,
         show_progress=show_progress,
+        live_stats=live_stats,
         reach_n_samples=reach_n_samples,
         reach_n_theta=reach_n_theta,
         reach_n_phi=reach_n_phi,
@@ -46,4 +50,6 @@ def run(
         use_gpu=use_gpu,
         save_joints=save_joints,
         save_joints_dir=save_joints_dir,
+        compare_source=compare_source,
+        compare_separation=compare_separation,
     )

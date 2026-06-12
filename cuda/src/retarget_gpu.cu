@@ -76,22 +76,63 @@ __device__ void euler_xyz_to_rotation(const float* euler, float* R) {
     R[8] = cx * cy;
 }
 
+/// SO(3) log with the θ≈π branch handled like Pinocchio/Eigen. The naive
+/// ``0.5 · θ/sinθ · antisym(R)`` formula divides float32 noise by ~0 near π,
+/// producing unbounded rotation vectors (and, through the SE(3) V⁻¹ coupling,
+/// absurd translation errors). ``‖rotvec‖ ≤ π`` always holds here.
 __device__ void log3_rotvec(const float* R_rel, float* rotvec) {
     const float trace = R_rel[0] + R_rel[4] + R_rel[8];
     float w[3] = {R_rel[7] - R_rel[5], R_rel[2] - R_rel[6], R_rel[3] - R_rel[1]};
     const float cos_angle = fmaxf(-1.0f, fminf(1.0f, 0.5f * (trace - 1.0f)));
     const float angle = acosf(cos_angle);
-    const float sin_angle = fastfk_device_sin(angle);
-    if (fabsf(sin_angle) < 1.0e-6f) {
-        rotvec[0] = 0.5f * w[0];
-        rotvec[1] = 0.5f * w[1];
-        rotvec[2] = 0.5f * w[2];
+
+    if (cos_angle > -0.99f) {
+        // Direction from the antisymmetric part, magnitude from the trace.
+        // Analytically ‖w‖ = 2·sinθ, but float32 orthonormality noise in w is
+        // amplified by 1/sinθ near the branch cutoff, letting ‖rotvec‖ exceed
+        // θ (and π). Normalizing w pins the magnitude to θ ≤ π exactly.
+        const float w_norm = sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+        if (angle < 1.0e-2f || w_norm < 1.0e-8f) {
+            // Tiny rotation: 0.5·w is more accurate than the acos-derived θ.
+            rotvec[0] = 0.5f * w[0];
+            rotvec[1] = 0.5f * w[1];
+            rotvec[2] = 0.5f * w[2];
+            return;
+        }
+        const float scale = angle / w_norm;
+        rotvec[0] = scale * w[0];
+        rotvec[1] = scale * w[1];
+        rotvec[2] = scale * w[2];
         return;
     }
-    const float scale = angle / sin_angle;
-    rotvec[0] = 0.5f * scale * w[0];
-    rotvec[1] = 0.5f * scale * w[1];
-    rotvec[2] = 0.5f * scale * w[2];
+
+    // Near π: recover the axis from the diagonal of R (stable), fix relative
+    // signs from the symmetric off-diagonals, and the overall sign from the
+    // antisymmetric part (ambiguous at exactly π, where ±axis are equivalent).
+    const float one_m_cos = 1.0f - cos_angle;
+    float ax = sqrtf(fmaxf(0.0f, (R_rel[0] - cos_angle) / one_m_cos));
+    float ay = sqrtf(fmaxf(0.0f, (R_rel[4] - cos_angle) / one_m_cos));
+    float az = sqrtf(fmaxf(0.0f, (R_rel[8] - cos_angle) / one_m_cos));
+    if (ax >= ay && ax >= az) {
+        ay = copysignf(ay, R_rel[1] + R_rel[3]);
+        az = copysignf(az, R_rel[2] + R_rel[6]);
+    } else if (ay >= az) {
+        ax = copysignf(ax, R_rel[1] + R_rel[3]);
+        az = copysignf(az, R_rel[5] + R_rel[7]);
+    } else {
+        ax = copysignf(ax, R_rel[2] + R_rel[6]);
+        ay = copysignf(ay, R_rel[5] + R_rel[7]);
+    }
+    if (ax * w[0] + ay * w[1] + az * w[2] < 0.0f) {
+        ax = -ax;
+        ay = -ay;
+        az = -az;
+    }
+    const float inv_norm =
+        rsqrtf(fmaxf(1.0e-12f, ax * ax + ay * ay + az * az));
+    rotvec[0] = angle * ax * inv_norm;
+    rotvec[1] = angle * ay * inv_norm;
+    rotvec[2] = angle * az * inv_norm;
 }
 
 __device__ float clampf(float v, float lo, float hi) {
@@ -102,6 +143,38 @@ __device__ float joint_difference(float q1, float q0) {
     return atan2f(fastfk_device_sin(q1 - q0), fastfk_device_cos(q1 - q0));
 }
 
+/// ``V(θ)⁻¹ · v`` for the SE(3) log: couples the translation component to the
+/// rotation vector ``w`` so the result matches Pinocchio's ``log6`` exactly.
+__device__ void se3_log_translation(const float* w, const float* v, float* out) {
+    const float theta_sq = w[0] * w[0] + w[1] * w[1] + w[2] * w[2];
+    const float theta = sqrtf(theta_sq);
+
+    float wxv[3] = {
+        w[1] * v[2] - w[2] * v[1],
+        w[2] * v[0] - w[0] * v[2],
+        w[0] * v[1] - w[1] * v[0],
+    };
+    float wxwxv[3] = {
+        w[1] * wxv[2] - w[2] * wxv[1],
+        w[2] * wxv[0] - w[0] * wxv[2],
+        w[0] * wxv[1] - w[1] * wxv[0],
+    };
+
+    float c2;  // coefficient of [w]×² in V⁻¹
+    if (theta < 1.0e-4f) {
+        c2 = 1.0f / 12.0f + theta_sq / 720.0f;
+    } else {
+        const float half = 0.5f * theta;
+        c2 = (1.0f - half * fastfk_device_cos(half) / fastfk_device_sin(half)) / theta_sq;
+    }
+#pragma unroll
+    for (int i = 0; i < 3; ++i) {
+        out[i] = v[i] - 0.5f * wxv[i] + c2 * wxwxv[i];
+    }
+}
+
+/// Full SE(3) ``log6`` error matching Pinocchio's ``pin.log(oMf⁻¹ · oMdes)``
+/// (translation coupled through V⁻¹; same convention as the CPU solver).
 __device__ void pose_log6_error(
     const float* R_curr,
     const float* p_curr,
@@ -112,9 +185,10 @@ __device__ void pose_log6_error(
         target6[1] - p_curr[1],
         target6[2] - p_curr[2],
     };
-    err6[0] = R_curr[0] * dp[0] + R_curr[3] * dp[1] + R_curr[6] * dp[2];
-    err6[1] = R_curr[1] * dp[0] + R_curr[4] * dp[1] + R_curr[7] * dp[2];
-    err6[2] = R_curr[2] * dp[0] + R_curr[5] * dp[1] + R_curr[8] * dp[2];
+    float t_local[3];
+    t_local[0] = R_curr[0] * dp[0] + R_curr[3] * dp[1] + R_curr[6] * dp[2];
+    t_local[1] = R_curr[1] * dp[0] + R_curr[4] * dp[1] + R_curr[7] * dp[2];
+    t_local[2] = R_curr[2] * dp[0] + R_curr[5] * dp[1] + R_curr[8] * dp[2];
 
     float R_tgt[9];
     euler_xyz_to_rotation(target6 + 3, R_tgt);
@@ -128,6 +202,7 @@ __device__ void pose_log6_error(
         }
     }
     log3_rotvec(R_rel, err6 + 3);
+    se3_log_translation(err6 + 3, t_local, err6);
 }
 
 __device__ void fk_tool0(const float* q_frame, float* R, float* p, float* J) {
@@ -427,6 +502,24 @@ __device__ void warp_pose_dls(
         for (int i = 3; i < 6; ++i) {
             nu6[i] = clampf(nu6[i], -c_rt_params.rot_nu_clamp, c_rt_params.rot_nu_clamp);
         }
+        // Weight rotation rows relative to translation. Default (rot_row_scale=0)
+        // derives the scale from the config error units (CPU cost: pos/pos_unit vs
+        // rot/rot_unit); unweighted DLS treats 1 rad ≈ 1 m and over-prioritizes
+        // rotation on unreachable poses. rot_row_scale=1 reproduces seed_ik.
+        float w_rot = c_rt_params.rot_row_scale;
+        if (w_rot <= 0.0f) {
+            const float w_pos = c_rt_params.pos_weight / c_rt_params.position_error_unit;
+            const float w_rot_raw = c_rt_params.rot_weight / c_rt_params.rotation_error_unit;
+            w_rot = (w_pos > 0.0f) ? (w_rot_raw / w_pos) : 1.0f;
+        }
+#pragma unroll
+        for (int i = 3; i < 6; ++i) {
+            nu6[i] *= w_rot;
+#pragma unroll
+            for (int d = 0; d < 6; ++d) {
+                J_pin[i * 6 + d] *= w_rot;
+            }
+        }
         damped_least_squares_delta_6(J_pin, nu6, c_rt_params.ik_damping, frame_dq);
     } else {
         float J_lin[18];
@@ -561,7 +654,149 @@ __global__ void retarget_trajectory_kernel(
     }
 }
 
+/// One thread per frame: FK + log6 pose error + joint speed (no shared memory).
+/// Matches the CPU evaluator (`pin.log(oMf⁻¹ · oMdes)`).
+__global__ void evaluate_trajectory_metrics_kernel(
+    const float* q,
+    const float* targets,
+    const int* lengths,
+    float* position_errors,
+    float* rotation_errors,
+    float* joint_speeds,
+    int d_pad,
+    int t_pad,
+    int n_dof,
+    float control_hz) {
+    const int traj = static_cast<int>(blockIdx.y);
+    const int t = static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const int t_len = lengths[traj];
+    if (t >= t_pad) {
+        return;
+    }
+
+    const int out_idx = traj * t_pad + t;
+    if (t >= t_len) {
+        position_errors[out_idx] = 0.0f;
+        rotation_errors[out_idx] = 0.0f;
+        joint_speeds[out_idx] = 0.0f;
+        return;
+    }
+
+    const float* q_traj = q + static_cast<std::size_t>(traj) * d_pad * t_pad;
+    const float* target6 = targets + (static_cast<std::size_t>(traj) * t_pad + t) * 6;
+
+    float q_frame[8];
+    float R[9];
+    float p[3];
+    float J_pin[36];
+    float err6[6];
+
+    load_q_frame(q_traj, q_frame, t, t_pad, n_dof);
+    fk_tool0(q_frame, R, p, J_pin);
+    pose_log6_error(R, p, target6, err6);
+
+    position_errors[out_idx] =
+        sqrtf(err6[0] * err6[0] + err6[1] * err6[1] + err6[2] * err6[2]);
+    rotation_errors[out_idx] =
+        sqrtf(err6[3] * err6[3] + err6[4] * err6[4] + err6[5] * err6[5]);
+
+    float speed_sq = 0.0f;
+    if (t > 0) {
+        for (int d = 0; d < n_dof; ++d) {
+            const float dq = joint_difference(
+                read_q(q_traj, d, t, t_pad, n_dof),
+                read_q(q_traj, d, t - 1, t_pad, n_dof));
+            const float v = dq * control_hz;
+            speed_sq += v * v;
+        }
+    }
+    joint_speeds[out_idx] = sqrtf(speed_sq);
+}
+
 }  // namespace
+
+void evaluate_trajectories_gpu(
+    const float* q,
+    const float* targets,
+    const int* lengths,
+    float* position_errors,
+    float* rotation_errors,
+    float* joint_speeds,
+    int n_traj,
+    int d_pad,
+    int t_pad,
+    int n_dof,
+    float control_hz) {
+    if (n_traj <= 0) {
+        return;
+    }
+    if (n_dof <= 0 || n_dof > 8) {
+        throw std::invalid_argument("n_dof must be in (0, 8] for trajectory evaluation");
+    }
+    if (d_pad < n_dof || t_pad <= 0) {
+        throw std::invalid_argument("invalid d_pad/t_pad for trajectory evaluation");
+    }
+
+    float* d_q = nullptr;
+    float* d_targets = nullptr;
+    int* d_lengths = nullptr;
+    float* d_pos_err = nullptr;
+    float* d_rot_err = nullptr;
+    float* d_speed = nullptr;
+
+    const std::size_t q_elems = static_cast<std::size_t>(n_traj) * d_pad * t_pad;
+    const std::size_t target_elems = static_cast<std::size_t>(n_traj) * t_pad * 6;
+    const std::size_t out_elems = static_cast<std::size_t>(n_traj) * t_pad;
+
+    check_cuda(cudaMalloc(&d_q, q_elems * sizeof(float)), "cudaMalloc eval q");
+    check_cuda(cudaMalloc(&d_targets, target_elems * sizeof(float)), "cudaMalloc eval targets");
+    check_cuda(
+        cudaMalloc(&d_lengths, static_cast<std::size_t>(n_traj) * sizeof(int)),
+        "cudaMalloc eval lengths");
+    check_cuda(cudaMalloc(&d_pos_err, out_elems * sizeof(float)), "cudaMalloc eval pos_err");
+    check_cuda(cudaMalloc(&d_rot_err, out_elems * sizeof(float)), "cudaMalloc eval rot_err");
+    check_cuda(cudaMalloc(&d_speed, out_elems * sizeof(float)), "cudaMalloc eval speed");
+
+    check_cuda(
+        cudaMemcpy(d_q, q, q_elems * sizeof(float), cudaMemcpyHostToDevice),
+        "cudaMemcpy eval q");
+    check_cuda(
+        cudaMemcpy(d_targets, targets, target_elems * sizeof(float), cudaMemcpyHostToDevice),
+        "cudaMemcpy eval targets");
+    check_cuda(
+        cudaMemcpy(
+            d_lengths,
+            lengths,
+            static_cast<std::size_t>(n_traj) * sizeof(int),
+            cudaMemcpyHostToDevice),
+        "cudaMemcpy eval lengths");
+
+    constexpr int kEvalBlock = 256;
+    const dim3 block(kEvalBlock);
+    const dim3 grid((t_pad + kEvalBlock - 1) / kEvalBlock, static_cast<unsigned>(n_traj));
+    evaluate_trajectory_metrics_kernel<<<grid, block>>>(
+        d_q, d_targets, d_lengths, d_pos_err, d_rot_err, d_speed,
+        d_pad, t_pad, n_dof, control_hz);
+    check_cuda(cudaGetLastError(), "evaluate_trajectory_metrics_kernel");
+    check_cuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize eval");
+
+    check_cuda(
+        cudaMemcpy(position_errors, d_pos_err, out_elems * sizeof(float), cudaMemcpyDeviceToHost),
+        "cudaMemcpy eval pos_err");
+    check_cuda(
+        cudaMemcpy(rotation_errors, d_rot_err, out_elems * sizeof(float), cudaMemcpyDeviceToHost),
+        "cudaMemcpy eval rot_err");
+    check_cuda(
+        cudaMemcpy(joint_speeds, d_speed, out_elems * sizeof(float), cudaMemcpyDeviceToHost),
+        "cudaMemcpy eval speed");
+
+    cudaFree(d_q);
+    cudaFree(d_targets);
+    cudaFree(d_lengths);
+    cudaFree(d_pos_err);
+    cudaFree(d_rot_err);
+    cudaFree(d_speed);
+}
 
 std::size_t retarget_gpu_warp_scratch_bytes(int frames_per_tile) {
     const int warps = std::max(1, frames_per_tile / kWarpSize);

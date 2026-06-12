@@ -25,6 +25,7 @@ class RetargetDemoRecord:
 @dataclass(frozen=True)
 class RetargetOutputIndex:
     output_dir: Path
+    dataset_url: str
     dataset_name: str
     robot_description: str
     use_gpu: bool
@@ -108,6 +109,7 @@ def load_metadata(output_dir: Path) -> RetargetOutputIndex:
     )
     return RetargetOutputIndex(
         output_dir=output_dir.resolve(),
+        dataset_url=str(payload["dataset_url"]),
         dataset_name=str(payload["dataset_name"]),
         robot_description=str(payload["robot_description"]),
         use_gpu=bool(payload["use_gpu"]),
