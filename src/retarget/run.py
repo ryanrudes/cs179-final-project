@@ -117,6 +117,7 @@ def _retarget_demo_frames(
     joint_speeds = []
     ik_success = []
     ik_iterations = []
+    joint_traj = []
 
     model = retargeter.model
     data = model.createData()
@@ -126,6 +127,7 @@ def _retarget_demo_frames(
         retargeter.set_position_scale(radial_scales[frame])
         retargeter.set_elbow_side_target(demo_elbow_sides[frame])
         q, pos, _rot, pos_error, rot_error, success, nit = retargeter(target)
+        joint_traj.append(np.asarray(q[: model.nv], dtype=np.float32))
         pin.forwardKinematics(model, data, q)
         pin.updateFramePlacements(model, data)
         err6 = pose_log6_error(data.oMf[reach_tool_frame_id], target_to_se3(target))
@@ -174,6 +176,7 @@ def _retarget_demo_frames(
         frame_metrics.position_errors,
         frame_metrics.rotation_errors,
         frame_metrics,
+        np.stack(joint_traj),
     )
 
 
@@ -331,6 +334,7 @@ def _retarget_demo_frames_gpu(
         pos_errs,
         rot_errs,
         frame_metrics,
+        np.asarray(joint_traj, dtype=np.float32),
     )
 
 
@@ -738,6 +742,15 @@ def run(
         print("No demos in the requested range.")
         return stats_batch
 
+    save_output_dir: Path | None = None
+    if save_joints or save_joints_dir is not None:
+        save_output_dir = (
+            save_joints_dir
+            if save_joints_dir is not None
+            else default_retarget_output_dir(data_dir, dataset_url)
+        )
+    per_demo_saved: list[RetargetDemoRecord] = []
+
     def retarget_one_demo(
         demo_idx: int,
         joint_positions: np.ndarray,
@@ -761,6 +774,7 @@ def run(
             position_errors,
             rotation_errors,
             frame_metrics,
+            joint_traj,
         ) = (
             _retarget_demo_frames_gpu(
                 joint_positions=joint_positions,
@@ -803,6 +817,15 @@ def run(
                 live_display.finish_demo(demo_stats, frame_metrics)
             else:
                 stats_batch.add_demo(demo_stats, frame_metrics)
+        if save_output_dir is not None:
+            rel = save_joint_trajectory(save_output_dir, demo_idx, joint_traj)
+            per_demo_saved.append(
+                RetargetDemoRecord(
+                    demo_idx=demo_idx,
+                    num_frames=int(joint_traj.shape[0]),
+                    joint_path=rel,
+                )
+            )
         if show_plots:
             _plot_demo_errors(
                 num_frames=num_frames,
@@ -815,12 +838,23 @@ def run(
         elif not use_live_panel:
             print(f"Demo {demo_idx}: done ({num_frames} frames).")
 
-    save_output_dir: Path | None = None
-    if save_joints or save_joints_dir is not None:
-        save_output_dir = (
-            save_joints_dir
-            if save_joints_dir is not None
-            else default_retarget_output_dir(data_dir, dataset_url)
+    def _write_per_demo_output() -> None:
+        if save_output_dir is None or not per_demo_saved:
+            return
+        write_metadata(
+            save_output_dir,
+            dataset_url=str(dataset_url),
+            robot_description=robot_description,
+            use_gpu=use_gpu,
+            reach_safety=reach_safety,
+            demos=per_demo_saved,
+        )
+        out = save_output_dir.resolve()
+        print(f"Wrote {len(per_demo_saved)} joint trajectory(s) to {out}")
+        print(
+            "Replay (SSH: ssh -L 7000:localhost:7000 … then open "
+            f"http://127.0.0.1:7000/static/):\n"
+            f"  uv run cs179 retarget replay --save-joints-dir {out} --demo 0"
         )
 
     def _report_gpu_skipped(skipped: list[tuple[int, int]]) -> None:
@@ -934,6 +968,7 @@ def run(
             start=start_demo,
         ):
             retarget_one_demo(demo_idx, joint_positions, cartesian_positions, on_frame=None)
+        _write_per_demo_output()
         print(f"Retargeted {demo_count} demo(s).")
         return stats_batch
 
@@ -984,6 +1019,7 @@ def run(
             display.progress.advance(demos_task)
         display.refresh()
 
+    _write_per_demo_output()
     if stats_batch is not None:
         print_batch_summary(
             stats_batch,

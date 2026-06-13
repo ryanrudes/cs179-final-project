@@ -58,6 +58,8 @@ Retarget one demo with live Meshcat playback and per-demo matplotlib error plots
 uv run cs179 retarget --dataset-url droid --start-demo 0 --end-demo 1
 ```
 
+![](assets/retarget_matplotlib.png)
+
 For the 100-demo subset instead, use `--dataset-url DROID_100`.
 
 **Mass retarget with Rich progress** (headless, no Meshcat or matplotlib):
