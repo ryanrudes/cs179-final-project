@@ -107,7 +107,9 @@ ssh -L 7000:localhost:7000 -L 6000:localhost:6000 user@host
 uv run cs179 retarget replay --dataset-url droid --demo 0 --loop --compare-source
 ```
 Adding the `--compare-source` flag places the original robot + motion side by side with the new robot executing the retargeted motion.
-![](assets/compare_source.mov)
+
+<video src="assets/compare_source.mov" width="100%"></video>
+
 
 First run builds or loads a reach envelope under `data/reach_envelopes/`. Defaults: **64×128** bins, **10M** FK samples. Use smaller values for a quick try:
 
