@@ -1,5 +1,7 @@
 # CS179 — DROID retargeting
 
+https://github.com/user-attachments/assets/8826a589-8dcc-4353-9307-15878e8df07b
+
 Download robot proprioception from RLDS (DROID), build a directional reach envelope, and retarget demonstrations onto a **UR3e** (default). DROID was recorded on Franka Panda arms; Panda is used only for elbow-side hints during retargeting.
 
 Python **3.12+**, dependencies and CLI via [uv](https://docs.astral.sh/uv/).
