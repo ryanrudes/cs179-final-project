@@ -100,6 +100,8 @@ uv run scripts/benchmark_cpu_gpu.py --dataset droid
 uv run scripts/benchmark_cpu_gpu.py --dataset droid --cpu-limit 50 --gpu-limit 1000
 ```
 
+![](assets/benchmark_cpu_gpu.png)
+
 Replay a saved demo in Meshcat (forward port 7000 when running over SSH):
 
 ```bash
@@ -196,12 +198,12 @@ Motion retargeting can be run on CPU or GPU. Below is an apples-to-apples throug
 
 | Backend         | Hardware Utilized | Solver Throughput (frames/sec) | Speedup   |
 | --------------- | ----------------- | ------------------------------ | --------- |
-| C++ CPU (NLopt) | 16 Cores          | ~710                           | 1x        |
-| GPU CUDA (Pure) | NVIDIA RTX A5000  | ~62,789                        | **88.4x** |
+| C++ CPU (NLopt) | 16 Cores          | ~816                           | 1x        |
+| GPU CUDA (Pure) | NVIDIA RTX A5000  | ~62,569                        | **76.6x** |
 
 Streaming the first 2,000 demos (~577k frames) through the full pipeline—data loading, Cartesian scaling, GPU multi-start seeding, and solve—sustains **~57,900 pipeline frames/sec** (~200 demos/sec), retargeting the complete ~2.8M-frame dataset in under a minute.
 
-> **Quality-tuned defaults.** The GPU solver now runs 30 pose + 4 temporal + 20 refine Jacobi sweeps (previously 6+4+4), seeds every demo with a GPU multi-start frame-0 IK pass, weights the DLS translation/rotation rows by the config error units, and uses the exact SE(3) `log6` pose error. This cut mean rotation error from ~1.4 rad to ~0.02 rad and mean position error from ~0.12 m to ~0.02 m on DROID demos (CPU NLopt reference: ~0.005 m / ~0.05 rad), at the cost of solver throughput (previously ~929k frames/sec at the under-converged settings). Per-frame pose-error metrics (`--live-stats`) are computed by a dedicated GPU kernel at ~1.5M frames/sec.
+> **Quality-tuned defaults.** The GPU solver runs 30 pose + 4 temporal + 20 refine Jacobi sweeps (6+4+4 was a few times faster, but resulted in some avoidable retargeting failures), seeds every demo with a GPU multi-start frame-0 IK pass, weights the DLS translation/rotation rows by the config error units, and uses the exact SE(3) `log6` pose error. This cut mean rotation error from ~1.4 rad to ~0.02 rad and mean position error from ~0.12 m to ~0.02 m on DROID demos (CPU NLopt reference: ~0.005 m / ~0.05 rad), at the cost of solver throughput (previously ~929k frames/sec at the under-converged settings). Per-frame pose-error metrics (`--live-stats`) are computed by a dedicated GPU kernel at ~1.5M frames/sec.
 
 > **Note:** The GPU implementation avoids iterative Python/C++ overhead by running Jacobi projected gradient descent completely inside shared memory. To maintain maximum throughput during dataset generation, run headless with `--disable-visualization --no-plots`, which skips Meshcat playback and matplotlib plots.
 
@@ -219,14 +221,7 @@ uv run scripts/benchmark_nsight.py --sweep     # 10/100/1000-demo scaling table
 
 Hardware metrics captured on an NVIDIA RTX A5000 across batch sizes (`--sweep`), profiled at the previous default iteration counts (6 pose + 4 temporal + 4 refine; kernel durations scale roughly linearly with sweep count):
 
-| Metric                        | 10 demos  | 100 demos | 1000 demos |
-| ----------------------------- | --------- | --------- | ---------- |
-| Total Kernel Duration         | 12.34 ms  | 16.27 ms  | 98.41 ms   |
-| Compute (SM) Throughput       | 2.92%     | 26.37%    | 44.30%     |
-| Achieved Occupancy            | 16.67%    | 16.67%    | 16.66%     |
-| Shared Mem Throughput         | 0.11%     | 0.97%     | 1.64%      |
-| Registers Per Thread          | 116       | 116       | 116        |
-| Dynamic Shared Memory / Block | 42.25 KiB | 58.25 KiB | 96.25 KiB  |
+![](assets/benchmark_nsight.png)
 
 *Note: The dynamic shared memory allocation keeps the entire solver state (joint trajectories and kinematics cache) on-chip within L1/Shared Memory, minimizing latency during iterative projected gradient descent steps. It grows with batch size because all demos in a launch are padded to the longest trajectory in the batch, and larger batches include longer demos.*
 

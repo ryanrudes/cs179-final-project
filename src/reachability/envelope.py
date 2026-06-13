@@ -164,16 +164,16 @@ class DirectionalReachEnvelope:
                     f"Cached envelope shape {envelope.bin_radii.shape} does not match "
                     f"requested ({n_theta}, {n_phi}). Delete {cache_path} or set force_rebuild=True."
                 )
-            print(
-                f"Loaded cached reach envelope from {cache_path} "
-                f"({envelope.n_theta}×{envelope.n_phi}, {time.perf_counter() - t0:.2f}s)"
-            )
+            # print(
+            #     f"Loaded cached reach envelope from {cache_path} "
+            #     f"({envelope.n_theta}×{envelope.n_phi}, {time.perf_counter() - t0:.2f}s)"
+            # )
             return envelope
 
-        print(
-            f"Building reach envelope for {robot_key}/{frame_name} "
-            f"({n_samples:,} FK samples, {n_theta}×{n_phi} bins)..."
-        )
+        # print(
+        #     f"Building reach envelope for {robot_key}/{frame_name} "
+        #     f"({n_samples:,} FK samples, {n_theta}×{n_phi} bins)..."
+        # )
         t0 = time.perf_counter()
         envelope = cls.from_robot(
             model,
@@ -186,7 +186,7 @@ class DirectionalReachEnvelope:
             show_progress=show_progress,
         )
         envelope.save(cache_path)
-        print(f"Saved reach envelope to {cache_path} ({time.perf_counter() - t0:.1f}s)")
+        # print(f"Saved reach envelope to {cache_path} ({time.perf_counter() - t0:.1f}s)")
         return envelope
 
     def reach_limits(self, directions: np.ndarray) -> np.ndarray:
@@ -365,7 +365,7 @@ def _build_bin_radii_batched(
             elapsed = time.perf_counter() - t0
             rate = done / max(elapsed, 1e-9)
             eta = (n_samples - done) / max(rate, 1e-9)
-            print(f"  reach envelope: {done:,}/{n_samples:,} samples ({rate:,.0f}/s, ETA {eta:.0f}s)")
+            # print(f"  reach envelope: {done:,}/{n_samples:,} samples ({rate:,.0f}/s, ETA {eta:.0f}s)")
 
     return _fill_empty_bins(bin_radii)
 
