@@ -158,6 +158,8 @@ uv run cs179 reach-envelope build --robot ur3e_description
 uv run cs179 reach-envelope visualize --robot ur3e_description
 ```
 
+![](assets/visualize_ur3e.png)
+
 Caches: `data/reach_envelopes/{robot}_{frame}_{n_theta}x{n_phi}_{n_samples}.npz`.
 
 ## Expected Results
