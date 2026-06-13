@@ -14,7 +14,7 @@ from rlds import RldsObservationLoader
 from .cache import RetargetOutputIndex, load_joint_trajectory, load_metadata
 from .config import load_retarget_config
 from .gpu import load_gpu_fk_model
-from .viz import create_retarget_visualizer, display_retarget_frame
+from .viz import DualRobotMeshcatDisplay, display_retarget_frame
 
 
 def _replay_viz_models(index: RetargetOutputIndex) -> tuple[pin.Model, pin.GeometryModel, pin.GeometryModel]:
@@ -53,7 +53,6 @@ def replay_demo(
     config = load_retarget_config()
     display_fps = float(config.display_fps if fps is None else fps)
 
-    target_robot = load_robot_description(index.robot_description)
     model, collision_model, visual_model = _replay_viz_models(index)
 
     source_joint_positions = None
@@ -72,10 +71,16 @@ def replay_demo(
             )
 
     if compare_source:
-        viz = create_retarget_visualizer(
-            target_robot,
-            compare_source=True,
-            source_robot=source_robot,
+        # Use the same kinematics model the playback ``q`` is built for (the
+        # GPU FK model when the cache was solved with --gpu) — the description
+        # model can have a different nq.
+        viz = DualRobotMeshcatDisplay(
+            model,
+            collision_model,
+            visual_model,
+            source_robot.model,
+            source_robot.collision_model,
+            source_robot.visual_model,
             separation=compare_separation,
         )
         print(
