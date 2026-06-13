@@ -46,8 +46,14 @@ class DualRobotMeshcatDisplay:
         self.target_viz.viewer[target_root].set_transform(target_offset)
         self.source_viz.viewer[source_root].set_transform(source_offset)
 
-        self.target_viz.setCameraTarget(np.array([0.4, 0.0, 0.2]))
-        self.target_viz.setCameraPosition(np.array([2.2, 0.0, 1.1]))
+        # Camera helpers need meshcat's set_cam_target/set_cam_pos, which not
+        # all releases provide (e.g. meshcat 0.3.2). Skip on older versions —
+        # the user can orbit manually.
+        try:
+            self.target_viz.setCameraTarget(np.array([0.4, 0.0, 0.2]))
+            self.target_viz.setCameraPosition(np.array([2.2, 0.0, 1.1]))
+        except AttributeError:
+            pass
 
     def display(self, target_q: np.ndarray, source_joint_row: np.ndarray) -> None:
         self.target_viz.display(pin.normalize(self.target_viz.model, target_q))
